@@ -1,48 +1,42 @@
-# Welcome to your Expo app 👋
+# Rep Counter aka *Elevara*
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Creator
+- Gregory Buono, gfbuono@buffalo.edu
 
-## Get started
+--- 
 
-1. Install dependencies
+## Project Objective
+The goal of this project is to develop **Elevara**, a wearable workout-tracking system that can automatically count reps and sets during strength training exercises. The system will include a wrist-mounted device and a mobile app. The user will select an exercise in the app, activate the wearable device, perform their set, and then end the set with a button press. The wearable will send the completed set data back to the app.
 
-   ```bash
-   npm install
-   ```
 
-2. Start the app
+## Contributions
+There is already a large amount of technology available for tracking running, steps, heart rate, and other cardiovascular activity, but strength training still relies heavily on manual logging. Many people record their workouts by hand or enter them into an app after finishing a set. Elevara aims to make this process more automatic and convenient by using a wearable sensor system to track reps and sets in real time and send the results directly to an app.
 
-   ```bash
-   npx expo start
-   ```
+## Project Plan
+This project will begin with research into existing fitness trackers, wearable motion sensors, and rep-counting methods. The first prototype will focus on using a wrist-mounted motion sensor to track one selected exercise at a time. The user will choose the exercise in the app before starting, which allows the device to use motion data specific to that exercise instead of trying to identify every movement automatically. After collecting motion data, the system will count repetitions, track sets, and transmit the set summary back to the app when the user finishes.
 
-In the output, you'll find options to open the app in a
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## Milestones/Schedule Checklist
+- [x] Complete this proposal document.  *Due March 31*
+- [ ] Come up with a plan/schematic.  *Due April 4*
+- [ ] Find/order parts.  *Due April 11*
+- [ ] Test parts.  *Due April 18*  
+- [ ] Create progress report.  *Due April 21*
+- [ ] Make the prototype.  *Due April 25*
+- [ ] Test at the gym.  *Due April 27*
+- [ ] Create final presentation.  *Due May 5*
+- [ ] Revise errors  *Due May 10*
+- [ ] Provide system documentation (README.md).  *Due May 15*
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
 
-## Get a fresh project
+## Measures of Success
+- [ ] The wearable correctly detects exercise motion.
+- [ ] The system accurately counts reps for at least one exercise.
+- [ ] The system accurately tracks sets.
+- [ ] The user can manually start and stop a set using the device and app.
+- [ ] The device successfully sends completed set data back to the app.
+- [ ] The system can be worn comfortably during a workout.
 
-When you're ready, run:
-
-```bash
-npm run reset-project
-```
-
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
 
 Join our community of developers creating universal apps.
 
