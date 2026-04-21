@@ -16,10 +16,12 @@ type LearnedProfile = {
   reverseThreshold: number;
   resetThreshold: number;
   minUpPeak: number;
+  learnedAt?: string;
 };
 
 const EXERCISES: ExerciseName[] = ['Bicep Curl', 'Tricep Extension'];
 const LEARNED_PROFILE_STORAGE_KEY = 'elevara_learned_profiles_v1';
+const EXERCISE_ORDER_STORAGE_KEY = 'elevara_exercise_order_v1';
 
 const lightPalette = {
   screen: '#e6f0f4',
@@ -32,6 +34,7 @@ const lightPalette = {
   success: '#39be60',
   warning: '#f2c94c',
   destructive: '#d95b5b',
+  neutral: '#4e7383',
 };
 
 const darkPalette = {
@@ -45,6 +48,7 @@ const darkPalette = {
   success: '#2f9c52',
   warning: '#d2ad3d',
   destructive: '#b94b4b',
+  neutral: '#355565',
 };
 
 export default function ExercisesScreen() {
@@ -52,6 +56,7 @@ export default function ExercisesScreen() {
   const theme = colorScheme === 'dark' ? darkPalette : lightPalette;
   const [permissionText, setPermissionText] = useState('Checking motion permission...');
   const [selectedExercise, setSelectedExercise] = useState<ExerciseName>('Bicep Curl');
+  const [exerciseOrder, setExerciseOrder] = useState<ExerciseName[]>(EXERCISES);
   const [learning, setLearning] = useState(false);
   const [savedProfiles, setSavedProfiles] = useState<Record<ExerciseName, LearnedProfile | null>>({
     'Bicep Curl': null,
@@ -66,6 +71,7 @@ export default function ExercisesScreen() {
 
   useEffect(() => {
     void loadSavedProfiles();
+    void loadExerciseOrder();
   }, []);
 
   useEffect(() => {
@@ -106,6 +112,8 @@ export default function ExercisesScreen() {
 
         if (axis && sign) {
           setSmoothedValue(current[axis] * sign);
+        } else {
+          setSmoothedValue(0);
         }
       });
     };
@@ -136,8 +144,8 @@ export default function ExercisesScreen() {
 
       const parsed = JSON.parse(raw) as Record<ExerciseName, LearnedProfile | null>;
       setSavedProfiles({
-        'Bicep Curl': parsed['Bicep Curl'] ?? null,
-        'Tricep Extension': parsed['Tricep Extension'] ?? null,
+        'Bicep Curl': normalizeLearnedProfile(parsed['Bicep Curl'] ?? null),
+        'Tricep Extension': normalizeLearnedProfile(parsed['Tricep Extension'] ?? null),
       });
     } catch (error) {
       console.log('Failed to load saved profiles', error);
@@ -151,6 +159,44 @@ export default function ExercisesScreen() {
     } catch (error) {
       console.log('Failed to save learned profiles', error);
     }
+  };
+
+  const loadExerciseOrder = async () => {
+    try {
+      const raw = await AsyncStorage.getItem(EXERCISE_ORDER_STORAGE_KEY);
+      if (!raw) {
+        setExerciseOrder(EXERCISES);
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as ExerciseName[];
+      setExerciseOrder(normalizeExerciseOrder(parsed));
+    } catch (error) {
+      console.log('Failed to load exercise order', error);
+    }
+  };
+
+  const persistExerciseOrder = async (order: ExerciseName[]) => {
+    try {
+      await AsyncStorage.setItem(EXERCISE_ORDER_STORAGE_KEY, JSON.stringify(order));
+      setExerciseOrder(order);
+    } catch (error) {
+      console.log('Failed to save exercise order', error);
+    }
+  };
+
+  const moveExercise = async (exercise: ExerciseName, direction: -1 | 1) => {
+    const currentIndex = exerciseOrder.indexOf(exercise);
+    const nextIndex = currentIndex + direction;
+    if (currentIndex < 0 || nextIndex < 0 || nextIndex >= exerciseOrder.length) {
+      return;
+    }
+
+    const nextOrder = [...exerciseOrder];
+    [nextOrder[currentIndex], nextOrder[nextIndex]] = [nextOrder[nextIndex], nextOrder[currentIndex]];
+    await persistExerciseOrder(nextOrder);
+    setPermissionText(`${exercise} moved to position ${nextIndex + 1}`);
+    void Haptics.selectionAsync();
   };
 
   const startLearning = () => {
@@ -179,19 +225,19 @@ export default function ExercisesScreen() {
     }
 
     const axisRanges: Record<AxisName, number> = {
-      x: getRange(samples.map((s) => s.x)),
-      y: getRange(samples.map((s) => s.y)),
-      z: getRange(samples.map((s) => s.z)),
+      x: getRange(samples.map((sample) => sample.x)),
+      y: getRange(samples.map((sample) => sample.y)),
+      z: getRange(samples.map((sample) => sample.z)),
     };
 
     const axis: AxisName =
       axisRanges.x >= axisRanges.y && axisRanges.x >= axisRanges.z
         ? 'x'
         : axisRanges.y >= axisRanges.z
-        ? 'y'
-        : 'z';
+          ? 'y'
+          : 'z';
 
-    const axisSeries = samples.map((s) => s[axis]);
+    const axisSeries = samples.map((sample) => sample[axis]);
     const maxAbs = Math.max(...axisSeries.map((value) => Math.abs(value)));
 
     if (maxAbs < 0.6) {
@@ -217,6 +263,7 @@ export default function ExercisesScreen() {
       downThreshold: Math.max(0.6, downPeak * 0.55),
       resetThreshold: Math.max(0.18, downPeak * 0.22),
       minUpPeak: Math.max(Math.max(0.8, upPeak * 0.5) * 1.15, upPeak * 0.85),
+      learnedAt: new Date().toISOString(),
     };
 
     const nextProfiles = {
@@ -249,16 +296,20 @@ export default function ExercisesScreen() {
       showsVerticalScrollIndicator={false}>
       <Text style={[styles.pageTitle, { color: theme.text }]}>Exercises</Text>
       <Text style={[styles.pageSubtitle, { color: theme.muted }]}>
-        Learn or relearn each movement here so the workout screen stays clean.
+        Learn or relearn each movement here so the workout screen stays focused on sets.
       </Text>
 
       <View style={[styles.statusCard, { backgroundColor: theme.accent }]}>
         <Text style={[styles.statusText, { color: theme.accentText }]}>{permissionText}</Text>
       </View>
 
-      {EXERCISES.map((exercise) => {
+      {exerciseOrder.map((exercise, index) => {
         const profile = savedProfiles[exercise];
         const isSelected = selectedExercise === exercise;
+        const freshness = getProfileFreshness(profile?.learnedAt);
+        const learnedLabel = profile?.learnedAt
+          ? `Saved ${formatRelativeDate(profile.learnedAt)}`
+          : 'No saved motion profile yet';
 
         return (
           <Pressable
@@ -272,29 +323,59 @@ export default function ExercisesScreen() {
             ]}
             onPress={() => setSelectedExercise(exercise)}>
             <View style={styles.cardHeader}>
-              <Text style={[styles.exerciseTitle, { color: theme.text }]}>{exercise}</Text>
+              <View style={styles.titleWrap}>
+                <Text style={[styles.orderIndex, { color: theme.muted }]}>{index + 1}</Text>
+                <Text style={[styles.exerciseTitle, { color: theme.text }]}>{exercise}</Text>
+              </View>
               <View
                 style={[
                   styles.stateBadge,
-                  { backgroundColor: profile ? theme.success : theme.accent },
+                  { backgroundColor: profile ? freshness.color : theme.accent },
                 ]}>
                 <Text style={[styles.stateBadgeText, { color: profile ? '#ffffff' : theme.accentText }]}>
-                  {profile ? 'Saved' : 'Not learned'}
+                  {profile ? freshness.label : 'Not learned'}
                 </Text>
               </View>
             </View>
 
+            <Text style={[styles.detailText, { color: theme.muted }]}>{learnedLabel}</Text>
             <Text style={[styles.detailText, { color: theme.muted }]}>
               {profile
-                ? `Axis ${profile.axis.toUpperCase()}  •  ${profile.upSign === 1 ? '+' : '-'} direction`
-                : 'No saved motion profile yet'}
+                ? `Axis ${profile.axis.toUpperCase()} | ${profile.upSign === 1 ? '+' : '-'} direction`
+                : 'Run Learn Exercise once to save a motion profile'}
             </Text>
 
             {profile && (
               <Text style={[styles.detailText, { color: theme.muted }]}>
-                Up {profile.upThreshold.toFixed(2)}  •  Down {profile.downThreshold.toFixed(2)}
+                Up {profile.upThreshold.toFixed(2)} | Down {profile.downThreshold.toFixed(2)}
               </Text>
             )}
+
+            <View style={styles.orderRow}>
+              <Text style={[styles.orderLabel, { color: theme.text }]}>Workout order</Text>
+              <View style={styles.orderButtons}>
+                <Pressable
+                  style={[styles.orderButton, { backgroundColor: theme.neutral }, index === 0 && styles.disabledButton]}
+                  disabled={index === 0}
+                  onPress={() => {
+                    void moveExercise(exercise, -1);
+                  }}>
+                  <Text style={styles.orderButtonText}>Up</Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.orderButton,
+                    { backgroundColor: theme.neutral },
+                    index === exerciseOrder.length - 1 && styles.disabledButton,
+                  ]}
+                  disabled={index === exerciseOrder.length - 1}
+                  onPress={() => {
+                    void moveExercise(exercise, 1);
+                  }}>
+                  <Text style={styles.orderButtonText}>Down</Text>
+                </Pressable>
+              </View>
+            </View>
 
             {isSelected && (
               <View style={styles.actionsBlock}>
@@ -347,6 +428,59 @@ function getRange(values: number[]) {
   return Math.max(...values) - Math.min(...values);
 }
 
+function normalizeLearnedProfile(profile: LearnedProfile | null) {
+  if (!profile) {
+    return null;
+  }
+
+  return {
+    ...profile,
+    learnedAt: profile.learnedAt ?? new Date().toISOString(),
+  };
+}
+
+function normalizeExerciseOrder(raw: unknown): ExerciseName[] {
+  if (!Array.isArray(raw)) {
+    return EXERCISES;
+  }
+
+  const seen = new Set<ExerciseName>();
+  const normalized = raw.filter((entry): entry is ExerciseName => {
+    return EXERCISES.includes(entry as ExerciseName) && !seen.has(entry as ExerciseName)
+      ? (seen.add(entry as ExerciseName), true)
+      : false;
+  });
+
+  return [...normalized, ...EXERCISES.filter((exercise) => !seen.has(exercise))];
+}
+
+function getProfileFreshness(learnedAt?: string) {
+  if (!learnedAt) {
+    return { label: 'Not learned', color: '#6b8794' };
+  }
+
+  const learnedTime = new Date(learnedAt).getTime();
+  const ageDays = (Date.now() - learnedTime) / (1000 * 60 * 60 * 24);
+
+  if (ageDays <= 7) {
+    return { label: 'Fresh', color: '#39be60' };
+  }
+
+  if (ageDays <= 21) {
+    return { label: 'Okay', color: '#f2c94c' };
+  }
+
+  return { label: 'Relearn', color: '#d95b5b' };
+}
+
+function formatRelativeDate(value: string) {
+  const date = new Date(value);
+  return date.toLocaleDateString([], {
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
 const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
@@ -381,12 +515,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 10,
+  },
+  titleWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: 10,
+  },
+  orderIndex: {
+    fontSize: 18,
+    fontWeight: '800',
+    width: 18,
   },
   exerciseTitle: {
     fontSize: 22,
     fontWeight: '800',
     flex: 1,
-    paddingRight: 10,
   },
   stateBadge: {
     borderRadius: 999,
@@ -402,6 +547,36 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     marginTop: 8,
+  },
+  orderRow: {
+    marginTop: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+  },
+  orderLabel: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  orderButtons: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  orderButton: {
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  orderButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  disabledButton: {
+    opacity: 0.35,
   },
   actionsBlock: {
     marginTop: 14,

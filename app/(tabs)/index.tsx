@@ -18,12 +18,14 @@ type LearnedProfile = {
   reverseThreshold: number;
   resetThreshold: number;
   minUpPeak: number;
+  learnedAt?: string;
 };
 
 type WorkoutSet = {
   id: string;
   reps: number;
   weight: number | null;
+  note?: string;
   timestamp: string;
 };
 
@@ -34,8 +36,40 @@ type WorkoutSession = {
   sets: WorkoutSet[];
 };
 
+type WorkoutRecord = {
+  id: string;
+  startedAt: string;
+  title: string;
+  note: string;
+  exercises: WorkoutSession[];
+};
+
+type WorkoutDraft = {
+  selectedExercise: ExerciseName;
+  activeExercise: ExerciseName | null;
+  exerciseSessions: Record<ExerciseName, WorkoutSession | null>;
+  title: string;
+  note: string;
+  exerciseOrder: ExerciseName[];
+  noteInputs: Record<ExerciseName, string>;
+};
+
+type FinishedWorkoutSummary = {
+  title: string;
+  note: string;
+  totalSets: number;
+  totalReps: number;
+  exercises: {
+    exercise: ExerciseName;
+    sets: number;
+    reps: number;
+  }[];
+};
+
 const WORKOUT_STORAGE_KEY = 'elevara_workout_history_v1';
 const LEARNED_PROFILE_STORAGE_KEY = 'elevara_learned_profiles_v1';
+const WORKOUT_DRAFT_STORAGE_KEY = 'elevara_workout_draft_v1';
+const EXERCISE_ORDER_STORAGE_KEY = 'elevara_exercise_order_v1';
 const EXERCISES: ExerciseName[] = ['Bicep Curl', 'Tricep Extension'];
 const TARGET_SETS = 5;
 const lightPalette = {
@@ -101,9 +135,11 @@ export default function HomeScreen() {
   const colorScheme = useColorScheme();
   const theme = colorScheme === 'dark' ? darkPalette : lightPalette;
   const [permissionText, setPermissionText] = useState('Checking motion permission...');
-  const [accel, setAccel] = useState({ x: 0, y: 0, z: 0 });
   const [smoothedValue, setSmoothedValue] = useState(0);
   const [selectedExercise, setSelectedExercise] = useState<ExerciseName>('Bicep Curl');
+  const [exerciseOrder, setExerciseOrder] = useState<ExerciseName[]>(EXERCISES);
+  const [workoutTitle, setWorkoutTitle] = useState('Arms Day');
+  const [workoutNote, setWorkoutNote] = useState('');
   const [running, setRunning] = useState(false);
   const [reps, setReps] = useState(0);
   const [repState, setRepState] = useState('idle');
@@ -118,12 +154,7 @@ export default function HomeScreen() {
     'Bicep Curl': null,
     'Tricep Extension': null,
   });
-  const [workoutHistory, setWorkoutHistory] = useState<WorkoutSession[]>([]);
-  const [learnedAxis, setLearnedAxis] = useState<AxisName | null>(null);
-  const [learnedUpSign, setLearnedUpSign] = useState<1 | -1 | null>(null);
-  const [upThresholdText, setUpThresholdText] = useState('--');
-  const [downThresholdText, setDownThresholdText] = useState('--');
-  const [reverseThresholdText, setReverseThresholdText] = useState('--');
+  const [workoutHistory, setWorkoutHistory] = useState<WorkoutRecord[]>([]);
   const [clockNow, setClockNow] = useState(() => new Date());
   const [restSecondsLeft, setRestSecondsLeft] = useState(0);
   const [isRestTimerRunning, setIsRestTimerRunning] = useState(false);
@@ -131,8 +162,16 @@ export default function HomeScreen() {
     'Bicep Curl': '',
     'Tricep Extension': '',
   });
-  const [editingWeightSetId, setEditingWeightSetId] = useState<string | null>(null);
-  const [editingWeightValue, setEditingWeightValue] = useState('');
+  const [setNoteInputs, setSetNoteInputs] = useState<Record<ExerciseName, string>>({
+    'Bicep Curl': '',
+    'Tricep Extension': '',
+  });
+  const [editingSetId, setEditingSetId] = useState<string | null>(null);
+  const [editingSetWeightValue, setEditingSetWeightValue] = useState('');
+  const [editingSetRepValue, setEditingSetRepValue] = useState('');
+  const [editingSetNoteValue, setEditingSetNoteValue] = useState('');
+  const [finishedSummary, setFinishedSummary] = useState<FinishedWorkoutSummary | null>(null);
+  const [signalSpread, setSignalSpread] = useState(0);
 
   const runningRef = useRef(false);
   const profileRef = useRef<LearnedProfile | null>(null);
@@ -146,6 +185,8 @@ export default function HomeScreen() {
   useEffect(() => {
     void loadWorkoutHistory();
     void loadSavedProfiles();
+    void loadExerciseOrder();
+    void loadWorkoutDraft();
   }, []);
 
   useFocusEffect(
@@ -165,6 +206,18 @@ export default function HomeScreen() {
   useEffect(() => {
     applyLearnedProfile(savedProfiles[selectedExercise]);
   }, [savedProfiles, selectedExercise]);
+
+  useEffect(() => {
+    void persistWorkoutDraft();
+  }, [
+    activeSession,
+    exerciseSessions,
+    selectedExercise,
+    workoutTitle,
+    workoutNote,
+    exerciseOrder,
+    setNoteInputs,
+  ]);
 
   useEffect(() => {
     if (!isRestTimerRunning) {
@@ -215,8 +268,6 @@ export default function HomeScreen() {
           z: a.z ?? 0,
         };
 
-        setAccel(current);
-
         if (runningRef.current && profileRef.current) {
           processRunningSample(current);
         }
@@ -236,19 +287,107 @@ export default function HomeScreen() {
     try {
       const raw = await AsyncStorage.getItem(WORKOUT_STORAGE_KEY);
       if (raw) {
-        setWorkoutHistory(JSON.parse(raw));
+        setWorkoutHistory(normalizeWorkoutHistory(JSON.parse(raw)));
       }
     } catch (error) {
       console.log('Failed to load workout history', error);
     }
   };
 
-  const persistWorkoutHistory = async (history: WorkoutSession[]) => {
+  const persistWorkoutHistory = async (history: WorkoutRecord[]) => {
     try {
       await AsyncStorage.setItem(WORKOUT_STORAGE_KEY, JSON.stringify(history));
       setWorkoutHistory(history);
     } catch (error) {
       console.log('Failed to save workout history', error);
+    }
+  };
+
+  const loadExerciseOrder = async () => {
+    try {
+      const raw = await AsyncStorage.getItem(EXERCISE_ORDER_STORAGE_KEY);
+      if (!raw) {
+        setExerciseOrder(EXERCISES);
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as ExerciseName[];
+      const normalized = normalizeExerciseOrder(parsed);
+      setExerciseOrder(normalized);
+    } catch (error) {
+      console.log('Failed to load exercise order', error);
+    }
+  };
+
+  const loadWorkoutDraft = async () => {
+    try {
+      const raw = await AsyncStorage.getItem(WORKOUT_DRAFT_STORAGE_KEY);
+      if (!raw) {
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as WorkoutDraft;
+      const normalizedOrder = normalizeExerciseOrder(parsed.exerciseOrder);
+      setExerciseOrder(normalizedOrder);
+      setWorkoutTitle(parsed.title || 'Arms Day');
+      setWorkoutNote(parsed.note || '');
+      setSetNoteInputs({
+        'Bicep Curl': parsed.noteInputs?.['Bicep Curl'] ?? '',
+        'Tricep Extension': parsed.noteInputs?.['Tricep Extension'] ?? '',
+      });
+      setExerciseSessions({
+        'Bicep Curl': parsed.exerciseSessions?.['Bicep Curl'] ?? null,
+        'Tricep Extension': parsed.exerciseSessions?.['Tricep Extension'] ?? null,
+      });
+      setSelectedExercise(parsed.selectedExercise ?? normalizedOrder[0]);
+
+      if (parsed.activeExercise) {
+        const restoredSession =
+          parsed.exerciseSessions?.[parsed.activeExercise as ExerciseName] ?? null;
+        setActiveSession(restoredSession);
+      } else {
+        setActiveSession(null);
+      }
+    } catch (error) {
+      console.log('Failed to load workout draft', error);
+    }
+  };
+
+  const persistWorkoutDraft = async () => {
+    try {
+      const draft: WorkoutDraft = {
+        selectedExercise,
+        activeExercise: activeSession?.exercise ?? null,
+        exerciseSessions,
+        title: workoutTitle,
+        note: workoutNote,
+        exerciseOrder,
+        noteInputs: setNoteInputs,
+      };
+
+      const hasAnySession = draft.exerciseOrder.some((exercise) => Boolean(draft.exerciseSessions[exercise]));
+      const hasMeta = Boolean(
+        draft.title.trim() ||
+          draft.note.trim() ||
+          Object.values(draft.noteInputs).some((value) => value.trim().length > 0)
+      );
+
+      if (!hasAnySession && !hasMeta) {
+        await AsyncStorage.removeItem(WORKOUT_DRAFT_STORAGE_KEY);
+        return;
+      }
+
+      await AsyncStorage.setItem(WORKOUT_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    } catch (error) {
+      console.log('Failed to save workout draft', error);
+    }
+  };
+
+  const clearWorkoutDraft = async () => {
+    try {
+      await AsyncStorage.removeItem(WORKOUT_DRAFT_STORAGE_KEY);
+    } catch (error) {
+      console.log('Failed to clear workout draft', error);
     }
   };
 
@@ -266,8 +405,8 @@ export default function HomeScreen() {
 
       const parsed = JSON.parse(raw) as Record<ExerciseName, LearnedProfile | null>;
       const nextProfiles = {
-        'Bicep Curl': parsed['Bicep Curl'] ?? null,
-        'Tricep Extension': parsed['Tricep Extension'] ?? null,
+        'Bicep Curl': normalizeLearnedProfile(parsed['Bicep Curl'] ?? null),
+        'Tricep Extension': normalizeLearnedProfile(parsed['Tricep Extension'] ?? null),
       };
 
       setSavedProfiles(nextProfiles);
@@ -279,11 +418,6 @@ export default function HomeScreen() {
 
   const clearProfileDisplay = () => {
     profileRef.current = null;
-    setLearnedAxis(null);
-    setLearnedUpSign(null);
-    setUpThresholdText('--');
-    setDownThresholdText('--');
-    setReverseThresholdText('--');
   };
 
   const applyLearnedProfile = (profile: LearnedProfile | null) => {
@@ -293,11 +427,6 @@ export default function HomeScreen() {
     }
 
     profileRef.current = profile;
-    setLearnedAxis(profile.axis);
-    setLearnedUpSign(profile.upSign);
-    setUpThresholdText(profile.upThreshold.toFixed(2));
-    setDownThresholdText(profile.downThreshold.toFixed(2));
-    setReverseThresholdText(profile.reverseThreshold.toFixed(2));
   };
 
   const resetCounterState = () => {
@@ -314,6 +443,7 @@ export default function HomeScreen() {
     lastRepTimeRef.current = 0;
     upPeakRef.current = 0;
     downStateStartedAtRef.current = 0;
+    setSignalSpread(0);
   };
 
   const handleExerciseChange = (exercise: ExerciseName) => {
@@ -358,7 +488,7 @@ export default function HomeScreen() {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
   };
 
-  const startRestTimer = (seconds = 90) => {
+  const startRestTimer = (seconds = 120) => {
     setRestSecondsLeft(seconds);
     setIsRestTimerRunning(true);
   };
@@ -389,8 +519,11 @@ export default function HomeScreen() {
     const smooth =
       smoothWindowRef.current.reduce((sum, v) => sum + v, 0) /
       smoothWindowRef.current.length;
+    const spread =
+      Math.max(...smoothWindowRef.current) - Math.min(...smoothWindowRef.current);
 
     setSmoothedValue(smooth);
+    setSignalSpread(spread);
 
     const now = Date.now();
     const logicState = logicStateRef.current;
@@ -540,6 +673,7 @@ export default function HomeScreen() {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       reps,
       weight,
+      note: setNoteInputs[selectedExercise].trim() || undefined,
       timestamp: new Date().toLocaleString(),
     };
 
@@ -570,6 +704,10 @@ export default function HomeScreen() {
     setPermissionText(
       `Set ${nextSetNumber} added: ${reps} reps${weight !== null ? ` @ ${weight} lb` : ''}`
     );
+    setSetNoteInputs((prev) => ({
+      ...prev,
+      [selectedExercise]: '',
+    }));
     setReps(0);
     setSmoothedValue(0);
     smoothWindowRef.current = [];
@@ -581,7 +719,7 @@ export default function HomeScreen() {
   };
 
   const finishWorkout = async () => {
-    const completedSessions = EXERCISES
+    const completedSessions = exerciseOrder
       .map((exercise) => exerciseSessions[exercise])
       .filter((session): session is WorkoutSession => Boolean(session && session.sets.length > 0));
 
@@ -590,44 +728,84 @@ export default function HomeScreen() {
       return;
     }
 
-    const updatedHistory = [...completedSessions, ...workoutHistory];
+    const nextWorkoutRecord: WorkoutRecord = {
+      id: Date.now().toString(),
+      startedAt: new Date().toLocaleString(),
+      title: workoutTitle.trim() || 'Workout',
+      note: workoutNote.trim(),
+      exercises: completedSessions,
+    };
+    const updatedHistory = [nextWorkoutRecord, ...workoutHistory];
     await persistWorkoutHistory(updatedHistory);
+
+    const totalSets = completedSessions.reduce((sum, session) => sum + session.sets.length, 0);
+    const totalReps = completedSessions.reduce(
+      (sum, session) => sum + session.sets.reduce((sessionSum, set) => sessionSum + set.reps, 0),
+      0
+    );
+    setFinishedSummary({
+      title: nextWorkoutRecord.title,
+      note: nextWorkoutRecord.note,
+      totalSets,
+      totalReps,
+      exercises: completedSessions.map((session) => ({
+        exercise: session.exercise,
+        sets: session.sets.length,
+        reps: session.sets.reduce((sum, set) => sum + set.reps, 0),
+      })),
+    });
 
     setActiveSession(null);
     setExerciseSessions({
       'Bicep Curl': null,
       'Tricep Extension': null,
     });
+    setSetNoteInputs({
+      'Bicep Curl': '',
+      'Tricep Extension': '',
+    });
+    setWorkoutTitle('Arms Day');
+    setWorkoutNote('');
+    setSelectedExercise(exerciseOrder[0] ?? 'Bicep Curl');
+    await clearWorkoutDraft();
     resetCounterState();
     pulseSuccess();
-    const totalSets = completedSessions.reduce((sum, session) => sum + session.sets.length, 0);
-    const totalReps = completedSessions.reduce(
-      (sum, session) => sum + session.sets.reduce((sessionSum, set) => sessionSum + set.reps, 0),
-      0
-    );
     setPermissionText(`Workout saved (${totalSets} sets, ${totalReps} reps)`);
   };
 
   const confirmFinishWorkout = () => {
-    const hasDraftWorkout = EXERCISES.some((exercise) => Boolean(exerciseSessions[exercise]));
+    const hasDraftWorkout = exerciseOrder.some((exercise) => Boolean(exerciseSessions[exercise]));
 
     if (!hasDraftWorkout) {
       setPermissionText('No workout session to save');
       return;
     }
 
-    Alert.alert('Are you sure?', 'Finishing will save this workout to your profile history.', [
-      {
-        text: 'Continue Workout',
-        style: 'cancel',
-      },
-      {
-        text: 'Finish Workout',
-        onPress: () => {
-          void finishWorkout();
+    const exerciseSummary = exerciseOrder
+      .map((exercise) => exerciseSessions[exercise])
+      .filter((session): session is WorkoutSession => Boolean(session && session.sets.length > 0))
+      .map((session) => {
+        const repsTotal = session.sets.reduce((sum, set) => sum + set.reps, 0);
+        return `${session.exercise}: ${session.sets.length} sets, ${repsTotal} reps`;
+      })
+      .join('\n');
+
+    Alert.alert(
+      'Finish workout?',
+      `${workoutTitle.trim() || 'Workout'}\n${workoutNote.trim() || 'No note'}\n\n${exerciseSummary}`,
+      [
+        {
+          text: 'Continue Workout',
+          style: 'cancel',
         },
-      },
-    ]);
+        {
+          text: 'Finish Workout',
+          onPress: () => {
+            void finishWorkout();
+          },
+        },
+      ]
+    );
   };
 
   const finishExercise = () => {
@@ -650,8 +828,8 @@ export default function HomeScreen() {
     }
 
     const totalReps = activeSession.sets.reduce((sum, set) => sum + set.reps, 0);
-    const nextExercise =
-      activeSession.exercise === 'Bicep Curl' ? 'Tricep Extension' : 'Bicep Curl';
+    const currentIndex = exerciseOrder.indexOf(activeSession.exercise);
+    const nextExercise = exerciseOrder[(currentIndex + 1) % exerciseOrder.length] ?? activeSession.exercise;
 
     setActiveSession(null);
     setSelectedExercise(nextExercise);
@@ -660,11 +838,6 @@ export default function HomeScreen() {
     setPermissionText(
       `${activeSession.exercise} ready to revisit (${activeSession.sets.length} sets, ${totalReps} reps). ${nextExercise} selected`
     );
-  };
-
-  const resetCurrentSet = () => {
-    resetCounterState();
-    setPermissionText('Current set counter reset');
   };
 
   const deleteSet = (exercise: ExerciseName, setId: string) => {
@@ -723,26 +896,38 @@ export default function HomeScreen() {
     ]);
   };
 
-  const beginWeightEdit = (setId: string, currentWeight: number | null) => {
-    setEditingWeightSetId(setId);
-    setEditingWeightValue(currentWeight === null ? '' : String(currentWeight));
+  const beginSetEdit = (set: WorkoutSet) => {
+    setEditingSetId(set.id);
+    setEditingSetRepValue(String(set.reps));
+    setEditingSetWeightValue(set.weight === null ? '' : String(set.weight));
+    setEditingSetNoteValue(set.note ?? '');
   };
 
-  const cancelWeightEdit = () => {
-    setEditingWeightSetId(null);
-    setEditingWeightValue('');
+  const cancelSetEdit = () => {
+    setEditingSetId(null);
+    setEditingSetRepValue('');
+    setEditingSetWeightValue('');
+    setEditingSetNoteValue('');
   };
 
-  const saveEditedWeight = (exercise: ExerciseName, setId: string) => {
+  const saveEditedSet = (exercise: ExerciseName, setId: string) => {
     const sessionToEdit =
       (activeSession?.exercise === exercise ? activeSession : null) ?? exerciseSessions[exercise];
 
     if (!sessionToEdit) {
-      cancelWeightEdit();
+      cancelSetEdit();
       return;
     }
 
-    const parsedWeight = Number.parseFloat(editingWeightValue);
+    const parsedReps = Number.parseInt(editingSetRepValue, 10);
+    const nextReps = Number.isFinite(parsedReps) && parsedReps > 0 ? parsedReps : null;
+    if (nextReps === null) {
+      pulseWarning();
+      setPermissionText('Reps must be a positive number');
+      return;
+    }
+
+    const parsedWeight = Number.parseFloat(editingSetWeightValue);
     const nextWeight = Number.isFinite(parsedWeight) && parsedWeight > 0 ? parsedWeight : null;
 
     const updatedSession: WorkoutSession = {
@@ -751,7 +936,9 @@ export default function HomeScreen() {
         set.id === setId
           ? {
               ...set,
+              reps: nextReps,
               weight: nextWeight,
+              note: editingSetNoteValue.trim() || undefined,
             }
           : set
       ),
@@ -767,10 +954,80 @@ export default function HomeScreen() {
     }
 
     pulseLight();
-    cancelWeightEdit();
+    cancelSetEdit();
     setPermissionText(
-      `Updated ${exercise} weight${nextWeight !== null ? ` to ${nextWeight} lb` : ''}`
+      `Updated ${exercise} set to ${nextReps} reps${nextWeight !== null ? ` @ ${nextWeight} lb` : ''}`
     );
+  };
+
+  const adjustRepCount = (delta: 1 | -1) => {
+    if (running) {
+      setReps((prev) => Math.max(0, prev + delta));
+      pulseLight();
+      return;
+    }
+
+    const sessionToAdjust =
+      (activeSession?.exercise === selectedExercise ? activeSession : null) ??
+      exerciseSessions[selectedExercise];
+    const lastSet = sessionToAdjust ? sessionToAdjust.sets[sessionToAdjust.sets.length - 1] : null;
+
+    if (!sessionToAdjust || !lastSet) {
+      pulseWarning();
+      setPermissionText('No recent set available to adjust');
+      return;
+    }
+
+    const nextReps = Math.max(1, lastSet.reps + delta);
+    const updatedSession: WorkoutSession = {
+      ...sessionToAdjust,
+      sets: sessionToAdjust.sets.map((set) =>
+        set.id === lastSet.id
+          ? {
+              ...set,
+              reps: nextReps,
+            }
+          : set
+      ),
+    };
+
+    setExerciseSessions((prev) => ({
+      ...prev,
+      [selectedExercise]: updatedSession,
+    }));
+
+    if (activeSession?.exercise === selectedExercise) {
+      setActiveSession(updatedSession);
+    }
+
+    pulseLight();
+    setPermissionText(`Adjusted last ${selectedExercise} set to ${nextReps} reps`);
+  };
+
+  const duplicateLastWorkout = () => {
+    const lastWorkout = workoutHistory[0];
+    if (!lastWorkout) {
+      pulseWarning();
+      setPermissionText('No previous workout available to duplicate');
+      return;
+    }
+
+    setWorkoutTitle(lastWorkout.title || 'Arms Day');
+    setWorkoutNote(lastWorkout.note || '');
+    setWeightInputs((prev) => {
+      const nextInputs = { ...prev };
+      EXERCISES.forEach((exercise) => {
+        const weightedSets =
+          lastWorkout.exercises
+            .find((session) => session.exercise === exercise)
+            ?.sets.filter((set) => set.weight !== null) ?? [];
+        const lastSet = weightedSets[weightedSets.length - 1] ?? null;
+        nextInputs[exercise] = lastSet?.weight !== null ? String(lastSet.weight) : '';
+      });
+      return nextInputs;
+    });
+    setPermissionText('Last workout title, note, and weights loaded');
+    pulseLight();
   };
 
   const formatTimer = (totalSeconds: number) => {
@@ -812,19 +1069,28 @@ export default function HomeScreen() {
   };
 
   const getLastCompletedWorkout = (exercise: ExerciseName) =>
-    workoutHistory.find((session) => session.exercise === exercise) ?? null;
+    workoutHistory
+      .flatMap((workout) => workout.exercises)
+      .find((session) => session.exercise === exercise) ?? null;
 
   const currentSession =
     activeSession?.exercise === selectedExercise
       ? activeSession
       : exerciseSessions[selectedExercise];
   const currentSetNumber = Math.min((currentSession?.sets.length ?? 0) + 1, TARGET_SETS);
-  const totalRepsForSession = currentSession?.sets.reduce((sum, set) => sum + set.reps, 0) ?? 0;
   const restTimerLabel = formatTimer(restSecondsLeft);
-  const selectedWorkoutTitle =
-    selectedExercise === 'Bicep Curl' ? 'Biceps Focus' : 'Triceps Focus';
-  const liveAxisValue = learnedAxis !== null ? accel[learnedAxis].toFixed(2) : '--';
   const selectedWeightInput = weightInputs[selectedExercise];
+  const selectedSetNoteInput = setNoteInputs[selectedExercise];
+  const activeProfile = savedProfiles[selectedExercise];
+  const signalConfidence = !activeProfile
+    ? 'No profile'
+    : running
+      ? signalSpread <= 0.12
+        ? 'Stable'
+        : signalSpread <= 0.28
+          ? 'Watch'
+          : 'Noisy'
+      : null;
 
   return (
     <View style={[styles.screen, { backgroundColor: theme.screen }]}>
@@ -842,7 +1108,77 @@ export default function HomeScreen() {
           <Text style={[styles.metaTime, { color: theme.textMuted }]}>{formatClock(clockNow)}</Text>
         </View>
 
-        <Text style={[styles.pageTitle, { color: theme.title }]}>{selectedWorkoutTitle}</Text>
+        <View
+          style={[
+            styles.workoutMetaCard,
+            { backgroundColor: theme.card, borderColor: theme.cardBorder },
+          ]}>
+          <View style={styles.workoutMetaHeader}>
+            <Text style={[styles.metaSectionTitle, { color: theme.text }]}>Workout</Text>
+            <Pressable style={styles.duplicateWorkoutButton} onPress={duplicateLastWorkout}>
+              <Text style={styles.duplicateWorkoutButtonText}>Duplicate Last</Text>
+            </Pressable>
+          </View>
+          <TextInput
+            value={workoutTitle}
+            onChangeText={setWorkoutTitle}
+            placeholder="Workout title"
+            placeholderTextColor={theme.textMuted}
+            style={[
+              styles.workoutTitleInput,
+              { color: theme.text, borderColor: theme.inputBorder, backgroundColor: theme.inputBg },
+            ]}
+          />
+          <TextInput
+            value={workoutNote}
+            onChangeText={setWorkoutNote}
+            placeholder="Add a note like Hotel Gym or Travel Day"
+            placeholderTextColor={theme.textMuted}
+            style={[
+              styles.workoutNoteInput,
+              { color: theme.text, borderColor: theme.inputBorder, backgroundColor: theme.inputBg },
+            ]}
+            multiline
+          />
+        </View>
+
+        <View style={[styles.helpCard, { backgroundColor: theme.pill }]}>
+          <Text style={[styles.helpCardTitle, { color: theme.pillText }]}>How it works</Text>
+          <Text style={[styles.helpCardText, { color: theme.pillText }]}>
+            Learn Exercise once in the Exercises tab, start a set here, then use Finish Exercise when you want to move to the next movement.
+          </Text>
+        </View>
+
+        {finishedSummary && (
+          <View style={[styles.finishSummaryCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
+            <View style={styles.finishSummaryHeader}>
+              <View style={styles.finishSummaryHeaderText}>
+                <Text style={[styles.finishSummaryTitle, { color: theme.text }]}>Last Workout Saved</Text>
+                <Text style={[styles.finishSummarySubtitle, { color: theme.textMuted }]}>
+                  {finishedSummary.title}
+                  {finishedSummary.note ? ` • ${finishedSummary.note}` : ''}
+                </Text>
+              </View>
+              <Pressable onPress={() => setFinishedSummary(null)}>
+                <Text style={[styles.finishSummaryDismiss, { color: theme.textMuted }]}>Hide</Text>
+              </Pressable>
+            </View>
+            <Text style={[styles.finishSummaryMeta, { color: theme.text }]}>
+              {finishedSummary.totalSets} sets • {finishedSummary.totalReps} reps
+            </Text>
+            <View style={styles.previousChipRow}>
+              {finishedSummary.exercises.map((exercise) => (
+                <View
+                  key={`summary-${exercise.exercise}`}
+                  style={[styles.previousChip, { backgroundColor: theme.previousBg }]}>
+                  <Text style={[styles.previousChipText, { color: theme.previousText }]}>
+                    {exercise.exercise}: {exercise.sets} sets / {exercise.reps} reps
+                  </Text>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
 
         <View style={[styles.infoPill, { backgroundColor: theme.pill }]}>
           <Text style={[styles.infoPillLabel, { color: theme.pillText }]}>Current Set</Text>
@@ -858,7 +1194,7 @@ export default function HomeScreen() {
           </Text>
         </View>
 
-        {EXERCISES.map((exercise, index) => {
+        {exerciseOrder.map((exercise, index) => {
           const isSelected = selectedExercise === exercise;
           const exerciseSession = getDraftWorkoutForExercise(exercise);
           const lastCompletedSession = getLastCompletedWorkout(exercise);
@@ -951,11 +1287,26 @@ export default function HomeScreen() {
                           Set {setIndex + 1}: {set.reps} Reps
                         </Text>
                         {editableSession && (
-                          editingWeightSetId === set.id ? (
+                          editingSetId === set.id ? (
                             <View style={styles.inlineWeightEditor}>
                               <TextInput
-                                value={editingWeightValue}
-                                onChangeText={(value) => setEditingWeightValue(value.replace(/[^0-9.]/g, ''))}
+                                value={editingSetRepValue}
+                                onChangeText={(value) => setEditingSetRepValue(value.replace(/[^0-9]/g, ''))}
+                                keyboardType="number-pad"
+                                placeholder="reps"
+                                placeholderTextColor={theme.textMuted}
+                                style={[
+                                  styles.inlineRepInput,
+                                  {
+                                    backgroundColor: theme.inputBg,
+                                    borderColor: theme.inputBorder,
+                                    color: theme.text,
+                                  },
+                                ]}
+                              />
+                              <TextInput
+                                value={editingSetWeightValue}
+                                onChangeText={(value) => setEditingSetWeightValue(value.replace(/[^0-9.]/g, ''))}
                                 keyboardType="decimal-pad"
                                 placeholder="lb"
                                 placeholderTextColor={theme.textMuted}
@@ -968,24 +1319,41 @@ export default function HomeScreen() {
                                   },
                                 ]}
                               />
+                              <TextInput
+                                value={editingSetNoteValue}
+                                onChangeText={setEditingSetNoteValue}
+                                placeholder="note"
+                                placeholderTextColor={theme.textMuted}
+                                style={[
+                                  styles.inlineNoteInput,
+                                  {
+                                    backgroundColor: theme.inputBg,
+                                    borderColor: theme.inputBorder,
+                                    color: theme.text,
+                                  },
+                                ]}
+                              />
                               <Pressable
                                 style={styles.inlineWeightAction}
-                                onPress={() => saveEditedWeight(exercise, set.id)}>
+                                onPress={() => saveEditedSet(exercise, set.id)}>
                                 <Text style={styles.inlineWeightActionText}>Save</Text>
                               </Pressable>
                               <Pressable
                                 style={styles.inlineWeightCancel}
-                                onPress={cancelWeightEdit}>
+                                onPress={cancelSetEdit}>
                                 <Text style={styles.inlineWeightCancelText}>Cancel</Text>
                               </Pressable>
                             </View>
                           ) : (
                             <Pressable
                               hitSlop={6}
-                              onPress={() => beginWeightEdit(set.id, set.weight)}>
+                              onPress={() => beginSetEdit(set)}>
                               <Text style={[styles.setWeightText, { color: theme.textMuted }]}>
-                                {set.weight !== null ? `@ ${set.weight} lb` : '@ add weight'}
+                                {set.weight !== null ? `${set.reps} reps @ ${set.weight} lb` : `${set.reps} reps @ add weight`}
                               </Text>
+                              {Boolean(set.note) && (
+                                <Text style={[styles.setNoteText, { color: theme.textMuted }]}>{set.note}</Text>
+                              )}
                             </Pressable>
                           )
                         )}
@@ -1025,6 +1393,21 @@ export default function HomeScreen() {
                       <Text style={[styles.metricChipValue, { color: theme.text }]}>{smoothedValue.toFixed(2)}</Text>
                       <Text style={[styles.metricChipLabel, { color: theme.textMuted }]}>Signal</Text>
                     </View>
+                    {signalConfidence && (
+                      <View style={[styles.metricChip, { borderColor: theme.inputBorder, backgroundColor: theme.frame }]}>
+                        <Text style={[styles.metricChipValue, { color: theme.text }]}>{signalConfidence}</Text>
+                        <Text style={[styles.metricChipLabel, { color: theme.textMuted }]}>Confidence</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  <View style={styles.quickAdjustRow}>
+                    <Pressable style={styles.quickAdjustButton} onPress={() => adjustRepCount(-1)}>
+                      <Text style={styles.quickAdjustButtonText}>-1 Rep</Text>
+                    </Pressable>
+                    <Pressable style={styles.quickAdjustButton} onPress={() => adjustRepCount(1)}>
+                      <Text style={styles.quickAdjustButtonText}>+1 Rep</Text>
+                    </Pressable>
                   </View>
 
                   <View style={styles.weightRow}>
@@ -1053,6 +1436,30 @@ export default function HomeScreen() {
                     <Text style={[styles.weightUnit, { color: theme.textMuted }]}>lb</Text>
                   </View>
 
+                  <View style={styles.weightRow}>
+                    <Text style={[styles.weightLabel, { color: theme.text }]}>Note</Text>
+                    <TextInput
+                      value={selectedSetNoteInput}
+                      onChangeText={(value) =>
+                        setSetNoteInputs((prev) => ({
+                          ...prev,
+                          [selectedExercise]: value,
+                        }))
+                      }
+                      editable={!running}
+                      placeholder="easy, bad form, left arm weak"
+                      placeholderTextColor={theme.textMuted}
+                      style={[
+                        styles.noteInput,
+                        {
+                          backgroundColor: theme.inputBg,
+                          borderColor: theme.inputBorder,
+                          color: theme.text,
+                        },
+                      ]}
+                    />
+                  </View>
+
                   <Pressable
                     style={[styles.primaryButton, running ? styles.primaryButtonActive : styles.primaryButtonIdle]}
                     onPress={running ? stopSet : startSet}
@@ -1061,15 +1468,6 @@ export default function HomeScreen() {
                       {running ? 'Log Set' : 'Start Set'}
                     </Text>
                   </Pressable>
-
-                  <View style={styles.inlineButtonRow}>
-                    <Pressable
-                      style={[styles.secondaryButton, running && styles.secondaryButtonDisabled]}
-                      disabled={running}
-                      onPress={resetCurrentSet}>
-                      <Text style={styles.secondaryButtonText}>Reset Set</Text>
-                    </Pressable>
-                  </View>
 
                   {isActiveExercise && (
                     <Pressable style={styles.finishExerciseButton} onPress={finishExercise}>
@@ -1092,51 +1490,9 @@ export default function HomeScreen() {
             <Text style={[styles.summaryValue, { color: theme.summaryValue }]}>{repState}</Text>
           </View>
           <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: theme.summaryLabel }]}>Learned Axis</Text>
-            <Text style={[styles.summaryValue, { color: theme.summaryValue }]}>{learnedAxis ?? '--'}</Text>
+            <Text style={[styles.summaryLabel, { color: theme.summaryLabel }]}>Confidence</Text>
+            <Text style={[styles.summaryValue, { color: theme.summaryValue }]}>{signalConfidence ?? '--'}</Text>
           </View>
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: theme.summaryLabel }]}>Live Axis</Text>
-            <Text style={[styles.summaryValue, { color: theme.summaryValue }]}>{liveAxisValue}</Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: theme.summaryLabel }]}>Up / Reverse / Down</Text>
-            <Text style={[styles.summaryValue, { color: theme.summaryValue }]}>
-              {upThresholdText} / {reverseThresholdText} / {downThresholdText}
-            </Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={[styles.summaryLabel, { color: theme.summaryLabel }]}>Profile</Text>
-            <Text style={[styles.summaryValue, { color: theme.summaryValue }]}>
-              {learnedUpSign === null ? '--' : learnedUpSign === 1 ? '+' : '-'} direction
-            </Text>
-          </View>
-        </View>
-
-        <View style={[styles.bottomTabBar, { borderTopColor: theme.bottomBarBorder }]}>
-          <View style={styles.bottomTabItem}>
-            <Ionicons name="barbell-outline" size={20} color={theme.text} />
-            <Text style={[styles.bottomTabTextActive, { color: theme.text }]}>Workouts</Text>
-          </View>
-          <View style={styles.bottomTabItem}>
-            <Ionicons name="options-outline" size={20} color={theme.inactiveTab} />
-            <Text style={[styles.bottomTabText, { color: theme.inactiveTab }]}>Exercises</Text>
-          </View>
-          <View style={styles.bottomTabItem}>
-            <Ionicons name="person-outline" size={20} color={theme.inactiveTab} />
-            <Text style={[styles.bottomTabText, { color: theme.inactiveTab }]}>Profile</Text>
-          </View>
-          <View style={styles.bottomTabItem}>
-            <Ionicons name="settings-outline" size={20} color={theme.inactiveTab} />
-            <Text style={[styles.bottomTabText, { color: theme.inactiveTab }]}>Settings</Text>
-          </View>
-        </View>
-
-        <View style={styles.microStats}>
-          <Text style={[styles.microStatsText, { color: theme.textMuted }]}>
-            Session reps: {totalRepsForSession}   x {accel.x.toFixed(2)}   y {accel.y.toFixed(2)}   z{' '}
-            {accel.z.toFixed(2)}
-          </Text>
         </View>
 
         <Pressable
@@ -1179,19 +1535,30 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.restDockRow}>
-          <View style={styles.restDockInfo}>
-            <Text style={[styles.restDockLabel, { color: theme.dockMuted }]}>Rest Timer</Text>
-            <Text style={[styles.restDockValue, { color: theme.dockText }]}>
-              {isRestTimerRunning ? restTimerLabel : 'Ready'}
-            </Text>
+          <Text style={[styles.restDockLabel, { color: theme.dockMuted }]}>Rest Timer</Text>
+          <View style={styles.restInlineControls}>
+            <Pressable
+              style={[styles.restPresetButton, !isRestTimerRunning && styles.restPresetButtonDisabled]}
+              disabled={!isRestTimerRunning}
+              onPress={() => {
+                setRestSecondsLeft((prev) => Math.max(10, prev - 10));
+              }}>
+              <Text style={styles.restPresetButtonText}>-10s</Text>
+            </Pressable>
+            <View style={styles.restBaseTimerChip}>
+              <Text style={styles.restBaseTimerChipText}>
+                {isRestTimerRunning ? restTimerLabel : '2:00'}
+              </Text>
+            </View>
+            <Pressable
+              style={[styles.restPresetButton, !isRestTimerRunning && styles.restPresetButtonDisabled]}
+              disabled={!isRestTimerRunning}
+              onPress={() => {
+                setRestSecondsLeft((prev) => prev + 10);
+              }}>
+              <Text style={styles.restPresetButtonText}>+10s</Text>
+            </Pressable>
           </View>
-          <Pressable
-            style={styles.restDockButton}
-            onPress={isRestTimerRunning ? cancelRestTimer : () => startRestTimer()}>
-            <Text style={styles.restDockButtonText}>
-              {isRestTimerRunning ? 'Cancel Rest' : 'Start Rest'}
-            </Text>
-          </Pressable>
         </View>
 
       </View>
@@ -1201,6 +1568,65 @@ export default function HomeScreen() {
 
 function pad(value: number) {
   return value.toString().padStart(2, '0');
+}
+
+function normalizeWorkoutHistory(raw: unknown): WorkoutRecord[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw.map((entry, index) => {
+    if (
+      entry &&
+      typeof entry === 'object' &&
+      'exercises' in entry &&
+      Array.isArray((entry as WorkoutRecord).exercises)
+    ) {
+      const record = entry as WorkoutRecord;
+      return {
+        id: record.id ?? `workout-${index}`,
+        startedAt: record.startedAt ?? new Date().toLocaleString(),
+        title: record.title ?? 'Workout',
+        note: record.note ?? '',
+        exercises: record.exercises ?? [],
+      };
+    }
+
+    const session = entry as WorkoutSession;
+    return {
+      id: session.id ?? `workout-${index}`,
+      startedAt: session.startedAt ?? new Date().toLocaleString(),
+      title: session.exercise ?? 'Workout',
+      note: '',
+      exercises: [session],
+    };
+  });
+}
+
+function normalizeExerciseOrder(raw: unknown): ExerciseName[] {
+  if (!Array.isArray(raw)) {
+    return EXERCISES;
+  }
+
+  const seen = new Set<ExerciseName>();
+  const normalized = raw.filter((entry): entry is ExerciseName => {
+    return EXERCISES.includes(entry as ExerciseName) && !seen.has(entry as ExerciseName)
+      ? (seen.add(entry as ExerciseName), true)
+      : false;
+  });
+
+  return [...normalized, ...EXERCISES.filter((exercise) => !seen.has(exercise))];
+}
+
+function normalizeLearnedProfile(profile: LearnedProfile | null) {
+  if (!profile) {
+    return null;
+  }
+
+  return {
+    ...profile,
+    learnedAt: profile.learnedAt ?? new Date().toISOString(),
+  };
 }
 
 const styles = StyleSheet.create({
@@ -1252,6 +1678,51 @@ const styles = StyleSheet.create({
     color: '#132c39',
     marginBottom: 10,
   },
+  workoutMetaCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 12,
+    marginBottom: 10,
+    gap: 10,
+  },
+  workoutMetaHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  metaSectionTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  duplicateWorkoutButton: {
+    backgroundColor: '#173f51',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  duplicateWorkoutButtonText: {
+    color: '#f5fbff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  workoutTitleInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  workoutNoteInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    minHeight: 68,
+    fontSize: 15,
+    fontWeight: '600',
+    textAlignVertical: 'top',
+  },
   infoPill: {
     backgroundColor: '#d8eef8',
     borderRadius: 10,
@@ -1271,6 +1742,56 @@ const styles = StyleSheet.create({
     color: '#27404b',
     fontSize: 16,
     fontWeight: '700',
+  },
+  helpCard: {
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    marginBottom: 8,
+  },
+  helpCardTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  helpCardText: {
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
+  },
+  finishSummaryCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 12,
+    marginBottom: 10,
+  },
+  finishSummaryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 10,
+    marginBottom: 6,
+  },
+  finishSummaryHeaderText: {
+    flex: 1,
+  },
+  finishSummaryTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  finishSummarySubtitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  finishSummaryDismiss: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  finishSummaryMeta: {
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 8,
   },
   exerciseCard: {
     backgroundColor: '#ffffff',
@@ -1389,6 +1910,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 2,
   },
+  setNoteText: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+    fontStyle: 'italic',
+  },
   inlineWeightEditor: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1404,6 +1931,25 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     fontSize: 14,
     fontWeight: '700',
+  },
+  inlineRepInput: {
+    minWidth: 64,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  inlineNoteInput: {
+    minWidth: 120,
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    fontSize: 14,
+    fontWeight: '600',
   },
   inlineWeightAction: {
     backgroundColor: '#dfeef4',
@@ -1443,8 +1989,10 @@ const styles = StyleSheet.create({
   liveSetRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     marginTop: 12,
     marginBottom: 12,
+    gap: 8,
   },
   liveSetLabel: {
     color: '#253b44',
@@ -1473,6 +2021,24 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginRight: 10,
   },
+  quickAdjustRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 12,
+  },
+  quickAdjustButton: {
+    flex: 1,
+    backgroundColor: '#deebf1',
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+  },
+  quickAdjustButtonText: {
+    color: '#173f51',
+    fontSize: 14,
+    fontWeight: '800',
+  },
   weightInput: {
     flex: 1,
     borderWidth: 1,
@@ -1484,6 +2050,18 @@ const styles = StyleSheet.create({
     color: '#173541',
     fontSize: 16,
     fontWeight: '700',
+  },
+  noteInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: '#d3e4eb',
+    backgroundColor: '#fbfdfe',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#173541',
+    fontSize: 14,
+    fontWeight: '600',
   },
   weightUnit: {
     color: '#6d828c',
@@ -1519,27 +2097,6 @@ const styles = StyleSheet.create({
     color: '#effff2',
     fontSize: 18,
     fontWeight: '700',
-  },
-  inlineButtonRow: {
-    flexDirection: 'row',
-    marginTop: 10,
-    gap: 8,
-  },
-  secondaryButton: {
-    flex: 1,
-    backgroundColor: '#deebf1',
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 11,
-  },
-  secondaryButtonDisabled: {
-    opacity: 0.45,
-  },
-  secondaryButtonText: {
-    color: '#4d6672',
-    fontSize: 15,
-    fontWeight: '600',
   },
   finishExerciseButton: {
     marginTop: 10,
@@ -1579,40 +2136,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     flex: 1.2,
     textAlign: 'right',
-  },
-  bottomTabBar: {
-    marginTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#e2eaee',
-    paddingTop: 10,
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  bottomTabItem: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  bottomTabTextActive: {
-    color: '#173f51',
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 4,
-  },
-  bottomTabText: {
-    color: '#a0afb7',
-    fontSize: 11,
-    fontWeight: '600',
-    marginTop: 4,
-  },
-  microStats: {
-    marginTop: 10,
-    alignItems: 'center',
-  },
-  microStatsText: {
-    color: '#8097a2',
-    fontSize: 11,
-    fontWeight: '600',
-    textAlign: 'center',
   },
   bottomFinishButton: {
     marginTop: 14,
@@ -1728,10 +2251,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  restDockInfo: {
-    flex: 1,
-    paddingRight: 10,
-  },
   restDockLabel: {
     fontSize: 12,
     fontWeight: '700',
@@ -1743,17 +2262,38 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     marginTop: 3,
   },
-  restDockButton: {
-    backgroundColor: '#edf4f7',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    minWidth: 112,
+  restInlineControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  restPresetButton: {
+    backgroundColor: '#214555',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    minWidth: 48,
     alignItems: 'center',
   },
-  restDockButtonText: {
-    color: '#173f51',
-    fontSize: 15,
+  restPresetButtonDisabled: {
+    opacity: 0.38,
+  },
+  restPresetButtonText: {
+    color: '#f5fbfd',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  restBaseTimerChip: {
+    backgroundColor: '#0f2430',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minWidth: 68,
+    alignItems: 'center',
+  },
+  restBaseTimerChipText: {
+    color: '#f5fbfd',
+    fontSize: 14,
     fontWeight: '800',
   },
 });
