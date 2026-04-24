@@ -1,44 +1,43 @@
-# Rep Counter aka *Elevara*
+# Elevara
 
 Creator
 - Gregory Buono, gfbuono@buffalo.edu
 
---- 
+## Overview
+Elevara is a mobile workout-tracking app focused on strength training. The current version uses phone motion data to help count reps during `Bicep Curl` and `Tricep Extension`, while also letting the user log sets, weights, notes, rest time, and workout history in one place. The project is aimed at making gym tracking faster and more automatic than manually writing workouts down after each set.
 
-## Project Objective
-The goal of this project is to develop **Elevara**, a wearable workout-tracking system that can automatically count reps and sets during strength training exercises. The system will include a wrist-mounted device and a mobile app. The user will select an exercise in the app, activate the wearable device, perform their set, and then end the set with a button press. The wearable will send the completed set data back to the app.
+Instead of trying to recognize every possible lift, the app currently uses a learned motion profile for each supported exercise. The user teaches the app a movement in the `Exercises` tab, then uses the `Workout` tab to run sets, review previous performance, correct small miscounts, and save completed workouts. The `Profile` tab stores grouped workout history, draft progress, analytics, and personal records.
 
+## Current Features
+- Motion-based rep counting for `Bicep Curl` and `Tricep Extension`
+- Saved exercise-learning profiles with relearn support
+- Workout drafting and restore after the app closes
+- Set logging with reps, weight, and optional set notes
+- Manual rep and weight correction tools
+- Automatic rest timer with adjustment controls
+- Finish-exercise and finish-workout flow
+- Grouped workout history on the Profile tab
+- Personal records and simple consistency insights
 
-## Contributions
-There is already a large amount of technology available for tracking running, steps, heart rate, and other cardiovascular activity, but strength training still relies heavily on manual logging. Many people record their workouts by hand or enter them into an app after finishing a set. Elevara aims to make this process more automatic and convenient by using a wearable sensor system to track reps and sets in real time and send the results directly to an app.
+## App Structure
+- [app/(tabs)/index.tsx](C:/Users/grego/elevara/app/(tabs)/index.tsx): main workout flow
+- [app/(tabs)/exercises.tsx](C:/Users/grego/elevara/app/(tabs)/exercises.tsx): learning and managing motion profiles
+- [app/(tabs)/explore.tsx](C:/Users/grego/elevara/app/(tabs)/explore.tsx): profile, history, and analytics
+- [app/(tabs)/_layout.tsx](C:/Users/grego/elevara/app/(tabs)/_layout.tsx): tab navigation
 
-## Project Plan
-This project will begin with research into existing fitness trackers, wearable motion sensors, and rep-counting methods. The first prototype will focus on using a wrist-mounted motion sensor to track one selected exercise at a time. The user will choose the exercise in the app before starting, which allows the device to use motion data specific to that exercise instead of trying to identify every movement automatically. After collecting motion data, the system will count repetitions, track sets, and transmit the set summary back to the app when the user finishes.
+## Setup
+1. Install dependencies with `npm install`
+2. Start the app with `npm start`
+3. Open it in Expo Go or an emulator
+4. Learn an exercise profile in the `Exercises` tab before using live rep counting on the workout screen
 
+## Progress Report
+This project has moved from a basic prototype into a more complete workout app. The app now has a dedicated workout screen, a separate exercise-learning screen, and a profile/history screen. The workout flow supports only two movements right now, but it already includes motion-based rep tracking, saved exercise profiles, draft workout recovery, weight logging, set notes, rest timing, workout naming, and grouped workout history. The app also gives the user ways to correct mistakes by editing logged sets and adjusting reps when a count is slightly off.
 
-## Milestones/Schedule Checklist
-- [x] Complete this proposal document.  *Due March 31*
-- [ ] Come up with a plan/schematic.  *Due April 4*
-- [ ] Find/order parts.  *Due April 11*
-- [ ] Test parts.  *Due April 18*  
-- [ ] Create progress report.  *Due April 21*
-- [ ] Make the prototype.  *Due April 25*
-- [ ] Test at the gym.  *Due April 27*
-- [ ] Create final presentation.  *Due May 5*
-- [ ] Revise errors  *Due May 10*
-- [ ] Provide system documentation (README.md).  *Due May 15*
+The biggest progress so far has been improving usability and reliability. The interface has been simplified around real gym use, with larger controls, clearer active states, automatic rest timing, previous-workout references, and a finish-workout summary. On top of that, the app now stores personal records and simple consistency insights on the profile screen. While the system is still limited to a small number of exercises and needs more real-world testing, it already demonstrates the core goal of making strength-training tracking faster, smarter, and easier to manage directly from the phone.
 
-
-## Measures of Success
-- [ ] The wearable correctly detects exercise motion.
-- [ ] The system accurately counts reps for at least one exercise.
-- [ ] The system accurately tracks sets.
-- [ ] The user can manually start and stop a set using the device and app.
-- [ ] The device successfully sends completed set data back to the app.
-- [ ] The system can be worn comfortably during a workout.
-
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+## Next Steps
+- Test rep counting more extensively in real gym conditions
+- Expand support beyond the current two exercises
+- Improve learned-profile robustness for different phone positions
+- Add more long-term workout analytics and polish

@@ -158,6 +158,7 @@ export default function HomeScreen() {
   const [clockNow, setClockNow] = useState(() => new Date());
   const [restSecondsLeft, setRestSecondsLeft] = useState(0);
   const [isRestTimerRunning, setIsRestTimerRunning] = useState(false);
+  const [startCountdown, setStartCountdown] = useState<number | null>(null);
   const [weightInputs, setWeightInputs] = useState<Record<ExerciseName, string>>({
     'Bicep Curl': '',
     'Tricep Extension': '',
@@ -239,6 +240,29 @@ export default function HomeScreen() {
 
     return () => clearInterval(timer);
   }, [isRestTimerRunning]);
+
+  useEffect(() => {
+    if (startCountdown === null) {
+      return;
+    }
+
+    if (startCountdown <= 0) {
+      runningRef.current = true;
+      setRunning(true);
+      setStartCountdown(null);
+      pulseSuccess();
+      setPermissionText(
+        `Set ${((activeSession?.sets.length ?? exerciseSessions[selectedExercise]?.sets.length ?? 0) + 1)} running`
+      );
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setStartCountdown((prev) => (prev === null ? null : prev - 1));
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [activeSession, exerciseSessions, selectedExercise, startCountdown]);
 
   useEffect(() => {
     let subscription: any = null;
@@ -432,6 +456,7 @@ export default function HomeScreen() {
   const resetCounterState = () => {
     runningRef.current = false;
     setRunning(false);
+    setStartCountdown(null);
     setReps(0);
     setSmoothedValue(0);
     setRepState('idle');
@@ -650,10 +675,35 @@ export default function HomeScreen() {
     setSmoothedValue(0);
     setRepState('ready');
     cancelRestTimer();
-    runningRef.current = true;
-    setRunning(true);
+    runningRef.current = false;
+    setRunning(false);
+    setStartCountdown(10);
     pulseLight();
-    setPermissionText(`Set ${sessionToUse.sets.length + 1} running`);
+    setPermissionText(`Starting set ${sessionToUse.sets.length + 1} in 10 seconds`);
+  };
+
+  const cancelStartCountdown = () => {
+    if (startCountdown === null) {
+      return;
+    }
+
+    const sessionToUse =
+      (activeSession?.exercise === selectedExercise ? activeSession : null) ??
+      exerciseSessions[selectedExercise];
+
+    if (sessionToUse && sessionToUse.sets.length === 0) {
+      setExerciseSessions((prev) => ({
+        ...prev,
+        [selectedExercise]: null,
+      }));
+      if (activeSession?.exercise === selectedExercise) {
+        setActiveSession(null);
+      }
+    }
+
+    resetCounterState();
+    setPermissionText('Set start canceled');
+    pulseWarning();
   };
 
   const stopSet = () => {
@@ -1077,6 +1127,7 @@ export default function HomeScreen() {
     activeSession?.exercise === selectedExercise
       ? activeSession
       : exerciseSessions[selectedExercise];
+  const isPreparingSet = startCountdown !== null;
   const currentSetNumber = Math.min((currentSession?.sets.length ?? 0) + 1, TARGET_SETS);
   const restTimerLabel = formatTimer(restSecondsLeft);
   const selectedWeightInput = weightInputs[selectedExercise];
@@ -1182,8 +1233,8 @@ export default function HomeScreen() {
 
         <View style={[styles.infoPill, { backgroundColor: theme.pill }]}>
           <Text style={[styles.infoPillLabel, { color: theme.pillText }]}>Current Set</Text>
-          <Text style={[styles.infoPillValue, { color: theme.pillText }]}>
-            {currentSession ? currentSetNumber : 'Ready'}
+            <Text style={[styles.infoPillValue, { color: theme.pillText }]}>
+            {isPreparingSet ? `Starting in ${startCountdown}` : currentSession ? currentSetNumber : 'Ready'}
           </Text>
         </View>
 
@@ -1462,10 +1513,10 @@ export default function HomeScreen() {
 
                   <Pressable
                     style={[styles.primaryButton, running ? styles.primaryButtonActive : styles.primaryButtonIdle]}
-                    onPress={running ? stopSet : startSet}
+                    onPress={running ? stopSet : isPreparingSet ? cancelStartCountdown : startSet}
                   >
                     <Text style={styles.primaryButtonText}>
-                      {running ? 'Log Set' : 'Start Set'}
+                      {running ? 'Log Set' : isPreparingSet ? `Cancel ${startCountdown}` : 'Start Set'}
                     </Text>
                   </Pressable>
 
@@ -1511,7 +1562,13 @@ export default function HomeScreen() {
           <View>
             <Text style={[styles.stickyDockEyebrow, { color: theme.dockMuted }]}>{selectedExercise}</Text>
             <Text style={[styles.stickyDockState, { color: theme.dockText }]}>
-              {running ? 'Counting live' : currentSession ? `Set ${currentSetNumber} ready` : 'Ready to start'}
+              {running
+                ? 'Counting live'
+                : isPreparingSet
+                  ? `Starting in ${startCountdown}s`
+                  : currentSession
+                    ? `Set ${currentSetNumber} ready`
+                    : 'Ready to start'}
             </Text>
           </View>
           <View style={[styles.stickyRepBadge, { backgroundColor: theme.dockBadge }]}>
@@ -1523,8 +1580,10 @@ export default function HomeScreen() {
         <View style={styles.stickyDockActions}>
           <Pressable
             style={[styles.stickyPrimaryButton, running ? styles.stickyPrimaryButtonActive : styles.stickyPrimaryButtonIdle]}
-            onPress={running ? stopSet : startSet}>
-            <Text style={styles.stickyPrimaryButtonText}>{running ? 'Log Set' : 'Start Set'}</Text>
+            onPress={running ? stopSet : isPreparingSet ? cancelStartCountdown : startSet}>
+            <Text style={styles.stickyPrimaryButtonText}>
+              {running ? 'Log Set' : isPreparingSet ? `Cancel ${startCountdown}` : 'Start Set'}
+            </Text>
           </Pressable>
 
           {activeSession?.exercise === selectedExercise && (
