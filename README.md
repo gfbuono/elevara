@@ -9,13 +9,13 @@ Elevara is a mobile workout-tracking app focused on strength training. I chose t
 
 The goal of Elevara is to make workout logging faster by using the phone's motion sensors to help count repetitions during an exercise. The current prototype supports `Bicep Curl` and `Tricep Extension`. A user can teach the app a motion profile for each exercise, start a set, let the app count reps, log weight and notes, use a rest timer, and save finished workouts to a profile/history screen.
 
-This project should be useful to anyone interested in fitness tracking, mobile app development, sensor-based interaction, or prototypes that turn raw device motion into a practical user interface.
+This project should be useful to anyone interested in fitness tracking that turns raw device motion into a practical user interface.
 
 ## Demonstration
 
-YouTube demo video: **TODO: add YouTube link here**
+YouTube demo video: **(https://youtu.be/bTE0qtNwAiM?si=eGvCQ3xgVg7wmAqR)**
 
-The demo video should show the main workflow:
+The demo video shows the main workflow:
 
 1. Open the app and go to the `Exercises` tab.
 2. Select an exercise such as `Bicep Curl`.
@@ -25,14 +25,9 @@ The demo video should show the main workflow:
 6. Enter a weight and optional note.
 7. Tap `Start Set`, wait for the countdown, and perform several reps.
 8. Log the set and show that the set was saved.
-9. Finish the workout and show the saved history in the `Profile` tab.
+9. Repeat with `Tricep Extension`.
+10. Finish the workout and show the saved history in the `Profile` tab.
 
-Suggested screenshots or images to add to the `media/` folder:
-
-- `media/exercises-screen.png`: the exercise learning screen.
-- `media/workout-screen.png`: the main workout screen before starting a set.
-- `media/live-counting.png`: the live rep-counting overlay.
-- `media/profile-history.png`: the profile/history screen after saving a workout.
 
 ## Installation Instructions
 
@@ -152,21 +147,18 @@ Less helpful or limited references:
 
 ## Future Work
 
-If I had more time, I would improve Elevara in several ways.
+In the future I plan on:
 
-First, I would make the motion recognition more reliable. The current app learns one motion profile per exercise and uses thresholds to detect reps. This works for a prototype, but it can be sensitive to phone position, speed, and how consistently the user performs the movement. A future version could collect multiple sample reps, average them, and store a more robust profile. It could also ask the user where the phone is being held, such as hand, wrist, or pocket.
+First, I would add more exercises. The current prototype focuses on a small set of arm movements, but a more complete version should support exercises such as shoulder press, bench press, lateral raises, squats, rows, and other strength-training movements. Each exercise would need its own testing because different lifts create different motion patterns.
 
-Second, I would improve the stop gesture. The app currently supports a learned stop gesture, but it can still conflict with normal rep motion if the gesture is too similar to the exercise. A better version would require a more distinct gesture, such as a side-to-side shake or double flick, and would ignore stop detection while a rep is actively being counted.
+Second, I would create a cleaner and more polished user interface. The current UI is functional for a prototype, but future versions could improve spacing, navigation, visual hierarchy, charts, button placement, and overall usability during an actual workout.
 
-Third, I would add more exercises. The prototype only supports `Bicep Curl` and `Tricep Extension`. Future versions could add shoulder press, bench press, lateral raises, squats, and other movements. This would require more testing because each exercise produces different motion data.
+Third, I would implement the app on the Apple Watch. Since the watch is already worn on the wrist, it would be a natural device for collecting motion data during workouts. An Apple Watch version could make rep counting more convenient because users would not need to hold their phone while exercising.
 
-Fourth, I would improve the workout analytics. The profile screen currently shows workout history, totals, and simple personal records. Future analytics could include weekly volume, best estimated one-rep max, progress charts, rest-time trends, and exercise-specific history.
+Finally, I would like to create my own wearable hardware with a Bluetooth connection. This device could use motion sensors to detect reps and then send set data to the mobile app. Building custom hardware would make the project closer to the original idea of a dedicated fitness-tracking wearable.
 
-Fifth, I would improve testing and validation. The app needs more real gym testing with different users, different phones, and different exercise speeds. It would also benefit from unit tests around the rep-counting state machine and storage normalization functions.
 
 Known issues and bugs:
 
 - Rep counting can miscount if the phone is held differently than it was during learning.
 - Stop gesture detection can conflict with rep motion if the learned stop gesture is too similar to the exercise.
-- Expo may open a cached project if a previous Metro server is still running; restarting Expo with `npm start -- --clear` usually fixes this.
-- Some lint warnings remain in the workout screen related to React hook dependencies. The app runs, but these should be cleaned up in a future refactor.
