@@ -7,6 +7,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 
 type AxisName = 'x' | 'y' | 'z';
 type ExerciseName = 'Bicep Curl' | 'Tricep Extension';
+type LearningMode = 'rep' | 'stop';
 
 type LearnedProfile = {
   axis: AxisName;
@@ -17,6 +18,11 @@ type LearnedProfile = {
   resetThreshold: number;
   minUpPeak: number;
   learnedAt?: string;
+};
+
+type ExerciseProfiles = {
+  rep: LearnedProfile | null;
+  stop: LearnedProfile | null;
 };
 
 const EXERCISES: ExerciseName[] = ['Bicep Curl', 'Tricep Extension'];
@@ -58,14 +64,22 @@ export default function ExercisesScreen() {
   const [selectedExercise, setSelectedExercise] = useState<ExerciseName>('Bicep Curl');
   const [exerciseOrder, setExerciseOrder] = useState<ExerciseName[]>(EXERCISES);
   const [learning, setLearning] = useState(false);
-  const [savedProfiles, setSavedProfiles] = useState<Record<ExerciseName, LearnedProfile | null>>({
-    'Bicep Curl': null,
-    'Tricep Extension': null,
+  const [learningMode, setLearningMode] = useState<LearningMode>('rep');
+  const [savedProfiles, setSavedProfiles] = useState<Record<ExerciseName, ExerciseProfiles>>({
+    'Bicep Curl': { rep: null, stop: null },
+    'Tricep Extension': { rep: null, stop: null },
   });
   const [accel, setAccel] = useState({ x: 0, y: 0, z: 0 });
   const [smoothedValue, setSmoothedValue] = useState(0);
 
   const learningRef = useRef(false);
+  const learningModeRef = useRef<LearningMode>('rep');
+  const selectedExerciseRef = useRef<ExerciseName>('Bicep Curl');
+  const savedProfilesRef = useRef<Record<ExerciseName, ExerciseProfiles>>({
+    'Bicep Curl': { rep: null, stop: null },
+    'Tricep Extension': { rep: null, stop: null },
+  });
+  const lastSensorDisplayUpdateRef = useRef(0);
   const learningSamplesRef = useRef<{ x: number; y: number; z: number }[]>([]);
   const learningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -73,6 +87,18 @@ export default function ExercisesScreen() {
     void loadSavedProfiles();
     void loadExerciseOrder();
   }, []);
+
+  useEffect(() => {
+    learningModeRef.current = learningMode;
+  }, [learningMode]);
+
+  useEffect(() => {
+    selectedExerciseRef.current = selectedExercise;
+  }, [selectedExercise]);
+
+  useEffect(() => {
+    savedProfilesRef.current = savedProfiles;
+  }, [savedProfiles]);
 
   useEffect(() => {
     let subscription: any = null;
@@ -101,19 +127,25 @@ export default function ExercisesScreen() {
           z: a.z ?? 0,
         };
 
-        setAccel(current);
-
         if (learningRef.current) {
           learningSamplesRef.current.push(current);
         }
 
-        const axis = savedProfiles[selectedExercise]?.axis;
-        const sign = savedProfiles[selectedExercise]?.upSign;
+        const now = Date.now();
+        if (now - lastSensorDisplayUpdateRef.current >= 100) {
+          lastSensorDisplayUpdateRef.current = now;
+          setAccel(current);
 
-        if (axis && sign) {
-          setSmoothedValue(current[axis] * sign);
-        } else {
-          setSmoothedValue(0);
+          const activeProfile =
+            savedProfilesRef.current[selectedExerciseRef.current][learningModeRef.current];
+          const axis = activeProfile?.axis;
+          const sign = activeProfile?.upSign;
+
+          if (axis && sign) {
+            setSmoothedValue(current[axis] * sign);
+          } else {
+            setSmoothedValue(0);
+          }
         }
       });
     };
@@ -124,9 +156,8 @@ export default function ExercisesScreen() {
       if (subscription) {
         subscription.remove();
       }
-      clearLearningTimer();
     };
-  }, [savedProfiles, selectedExercise]);
+  }, []);
 
   const clearLearningTimer = () => {
     if (learningTimerRef.current) {
@@ -142,17 +173,17 @@ export default function ExercisesScreen() {
         return;
       }
 
-      const parsed = JSON.parse(raw) as Record<ExerciseName, LearnedProfile | null>;
+      const parsed = JSON.parse(raw) as Record<ExerciseName, LearnedProfile | ExerciseProfiles | null>;
       setSavedProfiles({
-        'Bicep Curl': normalizeLearnedProfile(parsed['Bicep Curl'] ?? null),
-        'Tricep Extension': normalizeLearnedProfile(parsed['Tricep Extension'] ?? null),
+        'Bicep Curl': normalizeExerciseProfiles(parsed['Bicep Curl'] ?? null),
+        'Tricep Extension': normalizeExerciseProfiles(parsed['Tricep Extension'] ?? null),
       });
     } catch (error) {
       console.log('Failed to load saved profiles', error);
     }
   };
 
-  const persistSavedProfiles = async (profiles: Record<ExerciseName, LearnedProfile | null>) => {
+  const persistSavedProfiles = async (profiles: Record<ExerciseName, ExerciseProfiles>) => {
     try {
       await AsyncStorage.setItem(LEARNED_PROFILE_STORAGE_KEY, JSON.stringify(profiles));
       setSavedProfiles(profiles);
@@ -199,20 +230,25 @@ export default function ExercisesScreen() {
     void Haptics.selectionAsync();
   };
 
-  const startLearning = () => {
+  const startLearning = (mode: LearningMode) => {
     learningSamplesRef.current = [];
+    setLearningMode(mode);
     setLearning(true);
     learningRef.current = true;
-    setPermissionText(`Do 1 slow full ${selectedExercise.toLowerCase()} rep now`);
+    setPermissionText(
+      mode === 'rep'
+        ? `Do 1 slow full ${selectedExercise.toLowerCase()} rep now`
+        : `Do your stop gesture for ${selectedExercise.toLowerCase()} now`
+    );
     void Haptics.selectionAsync();
 
     clearLearningTimer();
     learningTimerRef.current = setTimeout(() => {
-      void finishLearning();
+      void finishLearning(mode);
     }, 3000);
   };
 
-  const finishLearning = async () => {
+  const finishLearning = async (mode: LearningMode) => {
     learningRef.current = false;
     setLearning(false);
     clearLearningTimer();
@@ -220,7 +256,7 @@ export default function ExercisesScreen() {
     const samples = learningSamplesRef.current;
 
     if (samples.length < 20) {
-      setPermissionText('Not enough motion captured. Try again with one clean rep.');
+      setPermissionText('Not enough motion captured. Try again with one clean motion.');
       return;
     }
 
@@ -241,7 +277,7 @@ export default function ExercisesScreen() {
     const maxAbs = Math.max(...axisSeries.map((value) => Math.abs(value)));
 
     if (maxAbs < 0.6) {
-      setPermissionText('Sample rep was too small. Move more clearly and try again.');
+      setPermissionText('Sample motion was too small. Move more clearly and try again.');
       return;
     }
 
@@ -268,25 +304,39 @@ export default function ExercisesScreen() {
 
     const nextProfiles = {
       ...savedProfiles,
-      [selectedExercise]: learnedProfile,
+      [selectedExercise]: {
+        ...savedProfiles[selectedExercise],
+        [mode]: learnedProfile,
+      },
     };
 
     await persistSavedProfiles(nextProfiles);
-    setPermissionText(`${selectedExercise} profile saved`);
+    setPermissionText(
+      mode === 'rep'
+        ? `${selectedExercise} rep profile saved`
+        : `${selectedExercise} stop gesture saved`
+    );
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
-  const clearExerciseProfile = async (exercise: ExerciseName) => {
+  const clearExerciseProfile = async (exercise: ExerciseName, mode: LearningMode) => {
     const nextProfiles = {
       ...savedProfiles,
-      [exercise]: null,
+      [exercise]: {
+        ...savedProfiles[exercise],
+        [mode]: null,
+      },
     };
 
     await persistSavedProfiles(nextProfiles);
     if (selectedExercise === exercise) {
       setSmoothedValue(0);
     }
-    setPermissionText(`${exercise} profile removed`);
+    setPermissionText(
+      mode === 'rep'
+        ? `${exercise} rep profile removed`
+        : `${exercise} stop gesture removed`
+    );
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
   };
 
@@ -296,7 +346,7 @@ export default function ExercisesScreen() {
       showsVerticalScrollIndicator={false}>
       <Text style={[styles.pageTitle, { color: theme.text }]}>Exercises</Text>
       <Text style={[styles.pageSubtitle, { color: theme.muted }]}>
-        Learn or relearn each movement here so the workout screen stays focused on sets.
+        Each exercise keeps its own rep profile and its own stop gesture.
       </Text>
 
       <View style={[styles.statusCard, { backgroundColor: theme.accent }]}>
@@ -304,12 +354,10 @@ export default function ExercisesScreen() {
       </View>
 
       {exerciseOrder.map((exercise, index) => {
-        const profile = savedProfiles[exercise];
+        const profiles = savedProfiles[exercise];
         const isSelected = selectedExercise === exercise;
-        const freshness = getProfileFreshness(profile?.learnedAt);
-        const learnedLabel = profile?.learnedAt
-          ? `Saved ${formatRelativeDate(profile.learnedAt)}`
-          : 'No saved motion profile yet';
+        const repFreshness = getProfileFreshness(profiles.rep?.learnedAt);
+        const stopFreshness = getProfileFreshness(profiles.stop?.learnedAt);
 
         return (
           <Pressable
@@ -327,29 +375,29 @@ export default function ExercisesScreen() {
                 <Text style={[styles.orderIndex, { color: theme.muted }]}>{index + 1}</Text>
                 <Text style={[styles.exerciseTitle, { color: theme.text }]}>{exercise}</Text>
               </View>
-              <View
-                style={[
-                  styles.stateBadge,
-                  { backgroundColor: profile ? freshness.color : theme.accent },
-                ]}>
-                <Text style={[styles.stateBadgeText, { color: profile ? '#ffffff' : theme.accentText }]}>
-                  {profile ? freshness.label : 'Not learned'}
+            </View>
+
+            <View style={styles.profileStatusRow}>
+              <View style={[styles.profileMiniCard, { backgroundColor: theme.accent }]}>
+                <Text style={[styles.profileMiniTitle, { color: theme.accentText }]}>Rep</Text>
+                <Text style={[styles.profileMiniValue, { color: theme.accentText }]}>
+                  {profiles.rep ? repFreshness.label : 'Missing'}
+                </Text>
+              </View>
+              <View style={[styles.profileMiniCard, { backgroundColor: theme.accent }]}>
+                <Text style={[styles.profileMiniTitle, { color: theme.accentText }]}>Stop</Text>
+                <Text style={[styles.profileMiniValue, { color: theme.accentText }]}>
+                  {profiles.stop ? stopFreshness.label : 'Missing'}
                 </Text>
               </View>
             </View>
 
-            <Text style={[styles.detailText, { color: theme.muted }]}>{learnedLabel}</Text>
             <Text style={[styles.detailText, { color: theme.muted }]}>
-              {profile
-                ? `Axis ${profile.axis.toUpperCase()} | ${profile.upSign === 1 ? '+' : '-'} direction`
-                : 'Run Learn Exercise once to save a motion profile'}
+              Rep: {profiles.rep ? `Saved ${formatRelativeDate(profiles.rep.learnedAt!)}` : 'Not learned yet'}
             </Text>
-
-            {profile && (
-              <Text style={[styles.detailText, { color: theme.muted }]}>
-                Up {profile.upThreshold.toFixed(2)} | Down {profile.downThreshold.toFixed(2)}
-              </Text>
-            )}
+            <Text style={[styles.detailText, { color: theme.muted }]}>
+              Stop: {profiles.stop ? `Saved ${formatRelativeDate(profiles.stop.learnedAt!)}` : 'Not learned yet'}
+            </Text>
 
             <View style={styles.orderRow}>
               <Text style={[styles.orderLabel, { color: theme.text }]}>Workout order</Text>
@@ -386,33 +434,53 @@ export default function ExercisesScreen() {
                   </Text>
                 </View>
                 <View style={styles.liveRow}>
-                  <Text style={[styles.liveLabel, { color: theme.text }]}>Signed signal</Text>
+                  <Text style={[styles.liveLabel, { color: theme.text }]}>
+                    {learningMode === 'rep' ? 'Rep signal' : 'Stop signal'}
+                  </Text>
                   <Text style={[styles.liveValue, { color: theme.muted }]}>{smoothedValue.toFixed(2)}</Text>
                 </View>
 
                 <Pressable
                   style={[styles.primaryButton, { backgroundColor: theme.success }]}
-                  onPress={startLearning}>
+                  onPress={() => startLearning('rep')}>
                   <Text style={styles.primaryButtonText}>
-                    {learning ? 'Learning...' : profile ? 'Relearn Exercise' : 'Learn Exercise'}
+                    {learning && learningMode === 'rep'
+                      ? 'Learning rep...'
+                      : profiles.rep
+                        ? 'Relearn Rep'
+                        : 'Learn Rep'}
                   </Text>
                 </Pressable>
 
-                {profile && (
-                  <Pressable
-                    style={[styles.secondaryButton, { backgroundColor: theme.warning }]}
-                    onPress={startLearning}>
-                    <Text style={styles.secondaryButtonText}>Relearn if phone position changes</Text>
-                  </Pressable>
-                )}
+                <Pressable
+                  style={[styles.secondaryButton, { backgroundColor: theme.warning }]}
+                  onPress={() => startLearning('stop')}>
+                  <Text style={styles.secondaryButtonText}>
+                    {learning && learningMode === 'stop'
+                      ? 'Learning stop...'
+                      : profiles.stop
+                        ? 'Relearn Stop Gesture'
+                        : 'Learn Stop Gesture'}
+                  </Text>
+                </Pressable>
 
-                {profile && (
+                {profiles.rep && (
                   <Pressable
                     style={[styles.deleteButton, { backgroundColor: theme.destructive }]}
                     onPress={() => {
-                      void clearExerciseProfile(exercise);
+                      void clearExerciseProfile(exercise, 'rep');
                     }}>
-                    <Text style={styles.deleteButtonText}>Delete Saved Profile</Text>
+                    <Text style={styles.deleteButtonText}>Delete Rep Profile</Text>
+                  </Pressable>
+                )}
+
+                {profiles.stop && (
+                  <Pressable
+                    style={[styles.deleteButton, { backgroundColor: theme.neutral }]}
+                    onPress={() => {
+                      void clearExerciseProfile(exercise, 'stop');
+                    }}>
+                    <Text style={styles.deleteButtonText}>Delete Stop Gesture</Text>
                   </Pressable>
                 )}
               </View>
@@ -439,6 +507,27 @@ function normalizeLearnedProfile(profile: LearnedProfile | null) {
   };
 }
 
+function normalizeExerciseProfiles(
+  raw: LearnedProfile | ExerciseProfiles | null
+): ExerciseProfiles {
+  if (!raw) {
+    return { rep: null, stop: null };
+  }
+
+  if ('rep' in raw || 'stop' in raw) {
+    const profiles = raw as ExerciseProfiles;
+    return {
+      rep: normalizeLearnedProfile(profiles.rep),
+      stop: normalizeLearnedProfile(profiles.stop),
+    };
+  }
+
+  return {
+    rep: normalizeLearnedProfile(raw as LearnedProfile),
+    stop: null,
+  };
+}
+
 function normalizeExerciseOrder(raw: unknown): ExerciseName[] {
   if (!Array.isArray(raw)) {
     return EXERCISES;
@@ -456,21 +545,21 @@ function normalizeExerciseOrder(raw: unknown): ExerciseName[] {
 
 function getProfileFreshness(learnedAt?: string) {
   if (!learnedAt) {
-    return { label: 'Not learned', color: '#6b8794' };
+    return { label: 'Missing' };
   }
 
   const learnedTime = new Date(learnedAt).getTime();
   const ageDays = (Date.now() - learnedTime) / (1000 * 60 * 60 * 24);
 
   if (ageDays <= 7) {
-    return { label: 'Fresh', color: '#39be60' };
+    return { label: 'Fresh' };
   }
 
   if (ageDays <= 21) {
-    return { label: 'Okay', color: '#f2c94c' };
+    return { label: 'Okay' };
   }
 
-  return { label: 'Relearn', color: '#d95b5b' };
+  return { label: 'Relearn' };
 }
 
 function formatRelativeDate(value: string) {
@@ -533,15 +622,25 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     flex: 1,
   },
-  stateBadge: {
-    borderRadius: 999,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+  profileStatusRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
   },
-  stateBadgeText: {
-    fontSize: 12,
+  profileMiniCard: {
+    flex: 1,
+    borderRadius: 14,
+    padding: 12,
+  },
+  profileMiniTitle: {
+    fontSize: 13,
     fontWeight: '800',
     textTransform: 'uppercase',
+  },
+  profileMiniValue: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginTop: 4,
   },
   detailText: {
     fontSize: 14,

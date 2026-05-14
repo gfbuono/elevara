@@ -4,7 +4,7 @@ import * as Haptics from 'expo-haptics';
 import { useFocusEffect } from '@react-navigation/native';
 import { DeviceMotion } from 'expo-sensors';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Animated, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 type AxisName = 'x' | 'y' | 'z';
@@ -19,6 +19,11 @@ type LearnedProfile = {
   resetThreshold: number;
   minUpPeak: number;
   learnedAt?: string;
+};
+
+type ExerciseProfiles = {
+  rep: LearnedProfile | null;
+  stop: LearnedProfile | null;
 };
 
 type WorkoutSet = {
@@ -72,6 +77,7 @@ const WORKOUT_DRAFT_STORAGE_KEY = 'elevara_workout_draft_v1';
 const EXERCISE_ORDER_STORAGE_KEY = 'elevara_exercise_order_v1';
 const EXERCISES: ExerciseName[] = ['Bicep Curl', 'Tricep Extension'];
 const TARGET_SETS = 5;
+const STOP_GESTURE_REP_COOLDOWN_MS = 900;
 const lightPalette = {
   screen: '#dce8ee',
   frame: '#f8fbfd',
@@ -135,7 +141,6 @@ export default function HomeScreen() {
   const colorScheme = useColorScheme();
   const theme = colorScheme === 'dark' ? darkPalette : lightPalette;
   const [permissionText, setPermissionText] = useState('Checking motion permission...');
-  const [smoothedValue, setSmoothedValue] = useState(0);
   const [selectedExercise, setSelectedExercise] = useState<ExerciseName>('Bicep Curl');
   const [exerciseOrder, setExerciseOrder] = useState<ExerciseName[]>(EXERCISES);
   const [workoutTitle, setWorkoutTitle] = useState('Arms Day');
@@ -150,14 +155,15 @@ export default function HomeScreen() {
     'Bicep Curl': null,
     'Tricep Extension': null,
   });
-  const [savedProfiles, setSavedProfiles] = useState<Record<ExerciseName, LearnedProfile | null>>({
-    'Bicep Curl': null,
-    'Tricep Extension': null,
+  const [savedProfiles, setSavedProfiles] = useState<Record<ExerciseName, ExerciseProfiles>>({
+    'Bicep Curl': { rep: null, stop: null },
+    'Tricep Extension': { rep: null, stop: null },
   });
   const [workoutHistory, setWorkoutHistory] = useState<WorkoutRecord[]>([]);
   const [clockNow, setClockNow] = useState(() => new Date());
   const [restSecondsLeft, setRestSecondsLeft] = useState(0);
   const [isRestTimerRunning, setIsRestTimerRunning] = useState(false);
+  const [isEndingSet, setIsEndingSet] = useState(false);
   const [startCountdown, setStartCountdown] = useState<number | null>(null);
   const [weightInputs, setWeightInputs] = useState<Record<ExerciseName, string>>({
     'Bicep Curl': '',
@@ -175,13 +181,39 @@ export default function HomeScreen() {
   const [signalSpread, setSignalSpread] = useState(0);
 
   const runningRef = useRef(false);
+  const isEndingSetRef = useRef(false);
+  const repsRef = useRef(0);
+  const selectedExerciseRef = useRef<ExerciseName>('Bicep Curl');
+  const activeSessionRef = useRef<WorkoutSession | null>(null);
+  const exerciseSessionsRef = useRef<Record<ExerciseName, WorkoutSession | null>>({
+    'Bicep Curl': null,
+    'Tricep Extension': null,
+  });
+  const weightInputsRef = useRef<Record<ExerciseName, string>>({
+    'Bicep Curl': '',
+    'Tricep Extension': '',
+  });
+  const setNoteInputsRef = useRef<Record<ExerciseName, string>>({
+    'Bicep Curl': '',
+    'Tricep Extension': '',
+  });
+  const startCountdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const liveOverlayOpacity = useRef(new Animated.Value(0)).current;
+  const liveOverlayScale = useRef(new Animated.Value(0.94)).current;
+  const repFlashOpacity = useRef(new Animated.Value(0)).current;
   const profileRef = useRef<LearnedProfile | null>(null);
+  const stopProfileRef = useRef<LearnedProfile | null>(null);
   const logicStateRef = useRef<'ready' | 'up' | 'peak' | 'down'>('ready');
   const smoothWindowRef = useRef<number[]>([]);
   const sawDownPeakRef = useRef(false);
   const lastRepTimeRef = useRef(0);
   const upPeakRef = useRef(0);
   const downStateStartedAtRef = useRef(0);
+  const stopLogicStateRef = useRef<'ready' | 'up' | 'peak' | 'down'>('ready');
+  const stopSmoothWindowRef = useRef<number[]>([]);
+  const stopSawDownPeakRef = useRef(false);
+  const stopUpPeakRef = useRef(0);
+  const stopDownStateStartedAtRef = useRef(0);
 
   useEffect(() => {
     void loadWorkoutHistory();
@@ -205,8 +237,60 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
-    applyLearnedProfile(savedProfiles[selectedExercise]);
+    applyLearnedProfiles(savedProfiles[selectedExercise]);
   }, [savedProfiles, selectedExercise]);
+
+  useEffect(() => {
+    repsRef.current = reps;
+  }, [reps]);
+
+  useEffect(() => {
+    selectedExerciseRef.current = selectedExercise;
+  }, [selectedExercise]);
+
+  useEffect(() => {
+    activeSessionRef.current = activeSession;
+  }, [activeSession]);
+
+  useEffect(() => {
+    exerciseSessionsRef.current = exerciseSessions;
+  }, [exerciseSessions]);
+
+  useEffect(() => {
+    weightInputsRef.current = weightInputs;
+  }, [weightInputs]);
+
+  useEffect(() => {
+    setNoteInputsRef.current = setNoteInputs;
+  }, [setNoteInputs]);
+
+  useEffect(() => {
+    isEndingSetRef.current = isEndingSet;
+  }, [isEndingSet]);
+
+  useEffect(() => {
+    if (running) {
+      liveOverlayOpacity.setValue(0);
+      liveOverlayScale.setValue(0.94);
+      Animated.parallel([
+        Animated.timing(liveOverlayOpacity, {
+          toValue: 1,
+          duration: 180,
+          useNativeDriver: true,
+        }),
+        Animated.spring(liveOverlayScale, {
+          toValue: 1,
+          tension: 55,
+          friction: 9,
+          useNativeDriver: true,
+        }),
+      ]).start();
+      return;
+    }
+
+    liveOverlayOpacity.setValue(0);
+    liveOverlayScale.setValue(0.94);
+  }, [liveOverlayOpacity, liveOverlayScale, running]);
 
   useEffect(() => {
     void persistWorkoutDraft();
@@ -230,7 +314,7 @@ export default function HomeScreen() {
         if (prev <= 1) {
           clearInterval(timer);
           setIsRestTimerRunning(false);
-          pulseSuccess();
+          pulseRestTimerComplete();
           return 0;
         }
 
@@ -240,29 +324,6 @@ export default function HomeScreen() {
 
     return () => clearInterval(timer);
   }, [isRestTimerRunning]);
-
-  useEffect(() => {
-    if (startCountdown === null) {
-      return;
-    }
-
-    if (startCountdown <= 0) {
-      runningRef.current = true;
-      setRunning(true);
-      setStartCountdown(null);
-      pulseSuccess();
-      setPermissionText(
-        `Set ${((activeSession?.sets.length ?? exerciseSessions[selectedExercise]?.sets.length ?? 0) + 1)} running`
-      );
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      setStartCountdown((prev) => (prev === null ? null : prev - 1));
-    }, 1000);
-
-    return () => clearTimeout(timer);
-  }, [activeSession, exerciseSessions, selectedExercise, startCountdown]);
 
   useEffect(() => {
     let subscription: any = null;
@@ -420,21 +481,21 @@ export default function HomeScreen() {
       const raw = await AsyncStorage.getItem(LEARNED_PROFILE_STORAGE_KEY);
       if (!raw) {
         setSavedProfiles({
-          'Bicep Curl': null,
-          'Tricep Extension': null,
+          'Bicep Curl': { rep: null, stop: null },
+          'Tricep Extension': { rep: null, stop: null },
         });
         clearProfileDisplay();
         return;
       }
 
-      const parsed = JSON.parse(raw) as Record<ExerciseName, LearnedProfile | null>;
+      const parsed = JSON.parse(raw) as Record<ExerciseName, LearnedProfile | ExerciseProfiles | null>;
       const nextProfiles = {
-        'Bicep Curl': normalizeLearnedProfile(parsed['Bicep Curl'] ?? null),
-        'Tricep Extension': normalizeLearnedProfile(parsed['Tricep Extension'] ?? null),
+        'Bicep Curl': normalizeExerciseProfiles(parsed['Bicep Curl'] ?? null),
+        'Tricep Extension': normalizeExerciseProfiles(parsed['Tricep Extension'] ?? null),
       };
 
       setSavedProfiles(nextProfiles);
-      applyLearnedProfile(nextProfiles[selectedExercise]);
+      applyLearnedProfiles(nextProfiles[selectedExercise]);
     } catch (error) {
       console.log('Failed to load saved profiles', error);
     }
@@ -442,23 +503,29 @@ export default function HomeScreen() {
 
   const clearProfileDisplay = () => {
     profileRef.current = null;
+    stopProfileRef.current = null;
   };
 
-  const applyLearnedProfile = (profile: LearnedProfile | null) => {
-    if (!profile) {
-      clearProfileDisplay();
-      return;
-    }
+  const applyLearnedProfiles = (profiles: ExerciseProfiles) => {
+    profileRef.current = profiles.rep;
+    stopProfileRef.current = profiles.stop;
+  };
 
-    profileRef.current = profile;
+  const clearStartCountdown = () => {
+    if (startCountdownTimerRef.current) {
+      clearInterval(startCountdownTimerRef.current);
+      startCountdownTimerRef.current = null;
+    }
+    setStartCountdown(null);
   };
 
   const resetCounterState = () => {
+    clearStartCountdown();
     runningRef.current = false;
+    isEndingSetRef.current = false;
     setRunning(false);
-    setStartCountdown(null);
+    setIsEndingSet(false);
     setReps(0);
-    setSmoothedValue(0);
     setRepState('idle');
     setIsRestTimerRunning(false);
     setRestSecondsLeft(0);
@@ -468,6 +535,11 @@ export default function HomeScreen() {
     lastRepTimeRef.current = 0;
     upPeakRef.current = 0;
     downStateStartedAtRef.current = 0;
+    stopLogicStateRef.current = 'ready';
+    stopSmoothWindowRef.current = [];
+    stopSawDownPeakRef.current = false;
+    stopUpPeakRef.current = 0;
+    stopDownStateStartedAtRef.current = 0;
     setSignalSpread(0);
   };
 
@@ -478,12 +550,12 @@ export default function HomeScreen() {
     }
 
     setSelectedExercise(exercise);
-    applyLearnedProfile(savedProfiles[exercise]);
+    applyLearnedProfiles(savedProfiles[exercise]);
     resetCounterState();
     setPermissionText(
-      savedProfiles[exercise]
-        ? `Selected ${exercise}. Saved profile ready.`
-        : `Selected ${exercise}. Save a profile in Exercises first.`
+      savedProfiles[exercise].rep
+        ? `Selected ${exercise}. Rep profile ready${savedProfiles[exercise].stop ? ' with stop gesture' : ''}.`
+        : `Selected ${exercise}. Save a rep profile in Exercises first.`
     );
   };
 
@@ -513,6 +585,30 @@ export default function HomeScreen() {
     void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
   };
 
+  const pulseRestTimerComplete = () => {
+    void (async () => {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+    })();
+  };
+
+  const flashRepFeedback = () => {
+    repFlashOpacity.setValue(0);
+    Animated.sequence([
+      Animated.timing(repFlashOpacity, {
+        toValue: 0.28,
+        duration: 90,
+        useNativeDriver: true,
+      }),
+      Animated.timing(repFlashOpacity, {
+        toValue: 0,
+        duration: 180,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
   const startRestTimer = (seconds = 120) => {
     setRestSecondsLeft(seconds);
     setIsRestTimerRunning(true);
@@ -527,12 +623,124 @@ export default function HomeScreen() {
     setReps((prev) => prev + 1);
     lastRepTimeRef.current = timestamp;
     pulseLight();
+    flashRepFeedback();
     resetToReady();
+  };
+
+  const resetStopGestureState = () => {
+    stopLogicStateRef.current = 'ready';
+    stopSmoothWindowRef.current = [];
+    stopSawDownPeakRef.current = false;
+    stopUpPeakRef.current = 0;
+    stopDownStateStartedAtRef.current = 0;
+  };
+
+  const processStopGestureSample = (
+    currentAccel: { x: number; y: number; z: number },
+    now: number
+  ) => {
+    const profile = stopProfileRef.current;
+    if (!profile) {
+      return false;
+    }
+
+    const rawSigned = getAxisValue(currentAccel, profile.axis) * profile.upSign;
+    stopSmoothWindowRef.current.push(rawSigned);
+    if (stopSmoothWindowRef.current.length > 4) {
+      stopSmoothWindowRef.current.shift();
+    }
+
+    const smooth =
+      stopSmoothWindowRef.current.reduce((sum, value) => sum + value, 0) /
+      stopSmoothWindowRef.current.length;
+
+    const logicState = stopLogicStateRef.current;
+
+    if (logicState === 'ready') {
+      if (smooth >= profile.upThreshold) {
+        stopLogicStateRef.current = 'up';
+        stopUpPeakRef.current = smooth;
+        stopSawDownPeakRef.current = false;
+        stopDownStateStartedAtRef.current = 0;
+      }
+      return false;
+    }
+
+    if (logicState === 'up') {
+      if (smooth > stopUpPeakRef.current) {
+        stopUpPeakRef.current = smooth;
+      }
+
+      if (stopUpPeakRef.current >= profile.minUpPeak && smooth < stopUpPeakRef.current * 0.7) {
+        stopLogicStateRef.current = 'peak';
+      }
+
+      if (stopUpPeakRef.current < profile.minUpPeak && smooth <= profile.resetThreshold) {
+        resetStopGestureState();
+      }
+      return false;
+    }
+
+    if (logicState === 'peak') {
+      if (smooth >= profile.upThreshold) {
+        stopLogicStateRef.current = 'up';
+        return false;
+      }
+
+      if (smooth <= -profile.reverseThreshold) {
+        stopLogicStateRef.current = 'down';
+        stopDownStateStartedAtRef.current = now;
+      }
+      return false;
+    }
+
+    const neutralBand = Math.max(profile.resetThreshold, profile.downThreshold * 0.45);
+    const downElapsed = now - stopDownStateStartedAtRef.current;
+
+    if (smooth <= -profile.downThreshold) {
+      stopSawDownPeakRef.current = true;
+    }
+
+    if (
+      stopSawDownPeakRef.current &&
+      stopUpPeakRef.current >= profile.minUpPeak &&
+      Math.abs(smooth) <= neutralBand
+    ) {
+      resetStopGestureState();
+      return true;
+    }
+
+    if (
+      downElapsed > 1400 &&
+      (smooth >= -profile.reverseThreshold * 0.25 ||
+        Math.abs(smooth) <= profile.downThreshold * 0.8)
+    ) {
+      const detected = stopSawDownPeakRef.current && stopUpPeakRef.current >= profile.minUpPeak;
+      resetStopGestureState();
+      return detected;
+    }
+
+    return false;
   };
 
   const processRunningSample = (currentAccel: { x: number; y: number; z: number }) => {
     const profile = profileRef.current;
     if (!profile) return;
+
+    const now = Date.now();
+    const canListenForStopGesture =
+      logicStateRef.current === 'ready' &&
+      now - lastRepTimeRef.current > STOP_GESTURE_REP_COOLDOWN_MS;
+
+    if (canListenForStopGesture && processStopGestureSample(currentAccel, now)) {
+      setPermissionText('Stop gesture detected');
+      stopSet();
+      return;
+    }
+
+    if (!canListenForStopGesture) {
+      resetStopGestureState();
+    }
 
     const rawSigned = getAxisValue(currentAccel, profile.axis) * profile.upSign;
 
@@ -547,10 +755,8 @@ export default function HomeScreen() {
     const spread =
       Math.max(...smoothWindowRef.current) - Math.min(...smoothWindowRef.current);
 
-    setSmoothedValue(smooth);
     setSignalSpread(spread);
 
-    const now = Date.now();
     const logicState = logicStateRef.current;
 
     if (logicState === 'ready') {
@@ -641,10 +847,69 @@ export default function HomeScreen() {
     }
   };
 
+  const beginRunningSet = (sessionToUse: WorkoutSession) => {
+    smoothWindowRef.current = [];
+    logicStateRef.current = 'ready';
+    sawDownPeakRef.current = false;
+    lastRepTimeRef.current = 0;
+    downStateStartedAtRef.current = 0;
+    resetStopGestureState();
+    setReps(0);
+    setRepState('ready');
+    setStartCountdown(null);
+    runningRef.current = true;
+    setRunning(true);
+    pulseLight();
+    setPermissionText(
+      stopProfileRef.current
+        ? `Set ${sessionToUse.sets.length + 1} running. Stop gesture armed.`
+        : `Set ${sessionToUse.sets.length + 1} running`
+    );
+  };
+
+  const cancelStartCountdown = () => {
+    if (startCountdown === null) {
+      return;
+    }
+
+    const sessionToUse =
+      (activeSession?.exercise === selectedExercise ? activeSession : null) ??
+      exerciseSessions[selectedExercise];
+
+    clearStartCountdown();
+
+    if (sessionToUse && sessionToUse.sets.length === 0) {
+      setExerciseSessions((prev) => ({
+        ...prev,
+        [selectedExercise]: null,
+      }));
+
+      if (activeSession?.exercise === selectedExercise) {
+        setActiveSession(null);
+      }
+    }
+
+    smoothWindowRef.current = [];
+    logicStateRef.current = 'ready';
+    sawDownPeakRef.current = false;
+    lastRepTimeRef.current = 0;
+    downStateStartedAtRef.current = 0;
+    resetStopGestureState();
+    setReps(0);
+    setRepState('idle');
+    pulseWarning();
+    setPermissionText('Set start canceled');
+  };
+
   const startSet = () => {
     if (!profileRef.current) {
       pulseWarning();
-      setPermissionText('No saved profile. Go to Exercises to learn this movement first.');
+      setPermissionText('No saved rep profile. Go to Exercises to learn this movement first.');
+      return;
+    }
+
+    if (startCountdown !== null) {
+      cancelStartCountdown();
       return;
     }
 
@@ -671,68 +936,66 @@ export default function HomeScreen() {
     sawDownPeakRef.current = false;
     lastRepTimeRef.current = 0;
     downStateStartedAtRef.current = 0;
+    resetStopGestureState();
     setReps(0);
-    setSmoothedValue(0);
-    setRepState('ready');
+    setRepState('starting');
     cancelRestTimer();
-    runningRef.current = false;
-    setRunning(false);
-    setStartCountdown(10);
+    clearStartCountdown();
+    setStartCountdown(3);
     pulseLight();
-    setPermissionText(`Starting set ${sessionToUse.sets.length + 1} in 10 seconds`);
-  };
+    setPermissionText(`Starting set ${sessionToUse.sets.length + 1} in 3 seconds`);
 
-  const cancelStartCountdown = () => {
-    if (startCountdown === null) {
-      return;
-    }
+    let countdownValue = 3;
+    startCountdownTimerRef.current = setInterval(() => {
+      countdownValue -= 1;
 
-    const sessionToUse =
-      (activeSession?.exercise === selectedExercise ? activeSession : null) ??
-      exerciseSessions[selectedExercise];
-
-    if (sessionToUse && sessionToUse.sets.length === 0) {
-      setExerciseSessions((prev) => ({
-        ...prev,
-        [selectedExercise]: null,
-      }));
-      if (activeSession?.exercise === selectedExercise) {
-        setActiveSession(null);
+      if (countdownValue <= 0) {
+        if (startCountdownTimerRef.current) {
+          clearInterval(startCountdownTimerRef.current);
+          startCountdownTimerRef.current = null;
+        }
+        beginRunningSet(sessionToUse);
+        return;
       }
-    }
 
-    resetCounterState();
-    setPermissionText('Set start canceled');
-    pulseWarning();
+      setStartCountdown(countdownValue);
+    }, 1000);
   };
 
-  const stopSet = () => {
+  const finalizeStopSet = () => {
     runningRef.current = false;
+    isEndingSetRef.current = false;
     setRunning(false);
+    setIsEndingSet(false);
     setRepState('idle');
 
-    if (reps <= 0) {
+    const currentReps = repsRef.current;
+    const currentExercise = selectedExerciseRef.current;
+    const currentWeightInput = weightInputsRef.current[currentExercise];
+    const currentNoteInput = setNoteInputsRef.current[currentExercise];
+
+    if (currentReps <= 0) {
       setPermissionText('No reps recorded for this set');
       return;
     }
 
-    const parsedWeight = Number.parseFloat(weightInputs[selectedExercise]);
+    const parsedWeight = Number.parseFloat(currentWeightInput);
     const weight = Number.isFinite(parsedWeight) && parsedWeight > 0 ? parsedWeight : null;
 
     const newSet: WorkoutSet = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      reps,
+      reps: currentReps,
       weight,
-      note: setNoteInputs[selectedExercise].trim() || undefined,
+      note: currentNoteInput.trim() || undefined,
       timestamp: new Date().toLocaleString(),
     };
 
     const baseSession =
-      (activeSession?.exercise === selectedExercise ? activeSession : null) ??
-      exerciseSessions[selectedExercise] ??
+      (activeSessionRef.current?.exercise === currentExercise ? activeSessionRef.current : null) ??
+      exerciseSessionsRef.current[currentExercise] ??
       ({
         id: Date.now().toString(),
-        exercise: selectedExercise,
+        exercise: currentExercise,
         startedAt: new Date().toLocaleString(),
         sets: [],
       } as WorkoutSession);
@@ -746,26 +1009,53 @@ export default function HomeScreen() {
     setActiveSession(nextSession);
     setExerciseSessions((prev) => ({
       ...prev,
-      [selectedExercise]: nextSession,
+      [currentExercise]: nextSession,
     }));
 
     startRestTimer();
     pulseSuccess();
     setPermissionText(
-      `Set ${nextSetNumber} added: ${reps} reps${weight !== null ? ` @ ${weight} lb` : ''}`
+      `Set ${nextSetNumber} added: ${currentReps} reps${weight !== null ? ` @ ${weight} lb` : ''}`
     );
     setSetNoteInputs((prev) => ({
       ...prev,
-      [selectedExercise]: '',
+      [currentExercise]: '',
     }));
     setReps(0);
-    setSmoothedValue(0);
     smoothWindowRef.current = [];
     logicStateRef.current = 'ready';
     sawDownPeakRef.current = false;
     lastRepTimeRef.current = 0;
     upPeakRef.current = 0;
     downStateStartedAtRef.current = 0;
+  };
+
+  const stopSet = () => {
+    if (isEndingSetRef.current) {
+      return;
+    }
+
+    if (!runningRef.current) {
+      finalizeStopSet();
+      return;
+    }
+
+    isEndingSetRef.current = true;
+    setIsEndingSet(true);
+    Animated.parallel([
+      Animated.timing(liveOverlayOpacity, {
+        toValue: 0,
+        duration: 170,
+        useNativeDriver: true,
+      }),
+      Animated.timing(liveOverlayScale, {
+        toValue: 0.96,
+        duration: 170,
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      finalizeStopSet();
+    });
   };
 
   const finishWorkout = async () => {
@@ -1098,6 +1388,11 @@ export default function HomeScreen() {
       minute: '2-digit',
     });
 
+  const formatPreviousSummary = (session: WorkoutSession) =>
+    session.sets
+      .map((set, index) => `P${index + 1}: ${set.reps}${set.weight !== null ? `@${set.weight}` : ''}`)
+      .join(' • ');
+
   const formatDate = (date: Date) =>
     date.toLocaleDateString([], {
       weekday: 'long',
@@ -1127,13 +1422,12 @@ export default function HomeScreen() {
     activeSession?.exercise === selectedExercise
       ? activeSession
       : exerciseSessions[selectedExercise];
-  const isPreparingSet = startCountdown !== null;
   const currentSetNumber = Math.min((currentSession?.sets.length ?? 0) + 1, TARGET_SETS);
   const restTimerLabel = formatTimer(restSecondsLeft);
   const selectedWeightInput = weightInputs[selectedExercise];
   const selectedSetNoteInput = setNoteInputs[selectedExercise];
   const activeProfile = savedProfiles[selectedExercise];
-  const signalConfidence = !activeProfile
+  const signalConfidence = !activeProfile.rep
     ? 'No profile'
     : running
       ? signalSpread <= 0.12
@@ -1193,13 +1487,6 @@ export default function HomeScreen() {
           />
         </View>
 
-        <View style={[styles.helpCard, { backgroundColor: theme.pill }]}>
-          <Text style={[styles.helpCardTitle, { color: theme.pillText }]}>How it works</Text>
-          <Text style={[styles.helpCardText, { color: theme.pillText }]}>
-            Learn Exercise once in the Exercises tab, start a set here, then use Finish Exercise when you want to move to the next movement.
-          </Text>
-        </View>
-
         {finishedSummary && (
           <View style={[styles.finishSummaryCard, { backgroundColor: theme.card, borderColor: theme.cardBorder }]}>
             <View style={styles.finishSummaryHeader}>
@@ -1233,8 +1520,12 @@ export default function HomeScreen() {
 
         <View style={[styles.infoPill, { backgroundColor: theme.pill }]}>
           <Text style={[styles.infoPillLabel, { color: theme.pillText }]}>Current Set</Text>
-            <Text style={[styles.infoPillValue, { color: theme.pillText }]}>
-            {isPreparingSet ? `Starting in ${startCountdown}` : currentSession ? currentSetNumber : 'Ready'}
+          <Text style={[styles.infoPillValue, { color: theme.pillText }]}>
+            {startCountdown !== null
+              ? `Starting in ${startCountdown}`
+              : currentSession
+                ? currentSetNumber
+                : 'Ready'}
           </Text>
         </View>
 
@@ -1306,21 +1597,9 @@ export default function HomeScreen() {
                   <Text style={[styles.lastWorkoutBannerText, { color: theme.previousText }]}>
                     Previous: {lastCompletedSession.startedAt}
                   </Text>
-                </View>
-              )}
-
-              {lastCompletedSession && (
-                <View style={styles.previousChipRow}>
-                  {lastCompletedSession.sets.map((set, setIndex) => (
-                    <View
-                      key={`last-${set.id}`}
-                      style={[styles.previousChip, { backgroundColor: theme.previousBg }]}>
-                      <Text style={[styles.previousChipText, { color: theme.previousText }]}>
-                        P{setIndex + 1}: {set.reps}
-                        {set.weight !== null ? ` @ ${set.weight}` : ''}
-                      </Text>
-                    </View>
-                  ))}
+                  <Text style={[styles.lastWorkoutSummaryText, { color: theme.previousText }]}>
+                    {formatPreviousSummary(lastCompletedSession)}
+                  </Text>
                 </View>
               )}
 
@@ -1435,30 +1714,10 @@ export default function HomeScreen() {
               {isSelected && (
                 <>
                   <View style={styles.liveSetRow}>
-                    <Text style={[styles.liveSetLabel, { color: theme.text }]}>Set {currentSetNumber}:</Text>
-                    <View style={[styles.metricChip, { borderColor: theme.inputBorder, backgroundColor: theme.frame }]}>
-                      <Text style={[styles.metricChipValue, { color: theme.text }]}>{reps}</Text>
-                      <Text style={[styles.metricChipLabel, { color: theme.textMuted }]}>Reps</Text>
-                    </View>
-                    <View style={[styles.metricChip, { borderColor: theme.inputBorder, backgroundColor: theme.frame }]}>
-                      <Text style={[styles.metricChipValue, { color: theme.text }]}>{smoothedValue.toFixed(2)}</Text>
-                      <Text style={[styles.metricChipLabel, { color: theme.textMuted }]}>Signal</Text>
-                    </View>
-                    {signalConfidence && (
-                      <View style={[styles.metricChip, { borderColor: theme.inputBorder, backgroundColor: theme.frame }]}>
-                        <Text style={[styles.metricChipValue, { color: theme.text }]}>{signalConfidence}</Text>
-                        <Text style={[styles.metricChipLabel, { color: theme.textMuted }]}>Confidence</Text>
-                      </View>
-                    )}
-                  </View>
-
-                  <View style={styles.quickAdjustRow}>
-                    <Pressable style={styles.quickAdjustButton} onPress={() => adjustRepCount(-1)}>
-                      <Text style={styles.quickAdjustButtonText}>-1 Rep</Text>
-                    </Pressable>
-                    <Pressable style={styles.quickAdjustButton} onPress={() => adjustRepCount(1)}>
-                      <Text style={styles.quickAdjustButtonText}>+1 Rep</Text>
-                    </Pressable>
+                    <Text style={[styles.liveSetLabel, { color: theme.text }]}>
+                      Set {currentSetNumber}
+                      {selectedWeightInput ? ` • ${selectedWeightInput} lb` : ''}
+                    </Text>
                   </View>
 
                   <View style={styles.weightRow}>
@@ -1511,15 +1770,6 @@ export default function HomeScreen() {
                     />
                   </View>
 
-                  <Pressable
-                    style={[styles.primaryButton, running ? styles.primaryButtonActive : styles.primaryButtonIdle]}
-                    onPress={running ? stopSet : isPreparingSet ? cancelStartCountdown : startSet}
-                  >
-                    <Text style={styles.primaryButtonText}>
-                      {running ? 'Log Set' : isPreparingSet ? `Cancel ${startCountdown}` : 'Start Set'}
-                    </Text>
-                  </Pressable>
-
                   {isActiveExercise && (
                     <Pressable style={styles.finishExerciseButton} onPress={finishExercise}>
                       <Text style={styles.finishExerciseButtonText}>Finish Exercise</Text>
@@ -1557,6 +1807,53 @@ export default function HomeScreen() {
         </View>
       </ScrollView>
 
+      {running && (
+        <Animated.View
+          style={[
+            styles.liveOverlay,
+            {
+              backgroundColor: theme.screen,
+              opacity: liveOverlayOpacity,
+              transform: [{ scale: liveOverlayScale }],
+            },
+          ]}>
+          <View
+            style={[
+              styles.liveOverlayFrame,
+              {
+                backgroundColor: theme.frame,
+                borderColor: theme.cardSelected,
+              },
+            ]}>
+            <Text style={[styles.liveOverlaySetLabel, { color: theme.text }]}>Set :{currentSetNumber}</Text>
+            <View style={[styles.liveOverlayRepCircle, { backgroundColor: theme.card }]}>
+              <Text style={[styles.liveOverlayRepValue, { color: theme.text }]}>{reps}</Text>
+              <Text style={[styles.liveOverlayRepLabel, { color: theme.text }]}>Rep</Text>
+            </View>
+            <Text style={[styles.liveOverlayState, { color: theme.textMuted }]}>
+              {signalConfidence ? `${repState} • ${signalConfidence}` : repState}
+            </Text>
+            <View style={styles.liveOverlayAdjustRow}>
+              <Pressable style={styles.quickAdjustButton} onPress={() => adjustRepCount(-1)}>
+                <Text style={styles.quickAdjustButtonText}>-1 Rep</Text>
+              </Pressable>
+              <Pressable style={styles.quickAdjustButton} onPress={() => adjustRepCount(1)}>
+                <Text style={styles.quickAdjustButtonText}>+1 Rep</Text>
+              </Pressable>
+            </View>
+            <Pressable
+              style={[styles.liveOverlayButton, isEndingSet && styles.liveOverlayButtonDisabled]}
+              disabled={isEndingSet}
+              onPress={stopSet}>
+              <Text style={styles.liveOverlayButtonText}>
+                {isEndingSet ? 'Saving...' : 'Log Set'}
+              </Text>
+            </Pressable>
+          </View>
+        </Animated.View>
+      )}
+
+      {!running && (
       <View style={[styles.stickyDock, { backgroundColor: theme.dock }]}>
         <View style={styles.stickyDockTop}>
           <View>
@@ -1564,25 +1861,21 @@ export default function HomeScreen() {
             <Text style={[styles.stickyDockState, { color: theme.dockText }]}>
               {running
                 ? 'Counting live'
-                : isPreparingSet
+                : startCountdown !== null
                   ? `Starting in ${startCountdown}s`
-                  : currentSession
-                    ? `Set ${currentSetNumber} ready`
-                    : 'Ready to start'}
+                : currentSession
+                  ? `Set ${currentSetNumber} ready`
+                  : 'Ready to start'}
             </Text>
-          </View>
-          <View style={[styles.stickyRepBadge, { backgroundColor: theme.dockBadge }]}>
-            <Text style={[styles.stickyRepValue, { color: theme.dockText }]}>{reps}</Text>
-            <Text style={[styles.stickyRepLabel, { color: theme.dockMuted }]}>REPS</Text>
           </View>
         </View>
 
         <View style={styles.stickyDockActions}>
           <Pressable
             style={[styles.stickyPrimaryButton, running ? styles.stickyPrimaryButtonActive : styles.stickyPrimaryButtonIdle]}
-            onPress={running ? stopSet : isPreparingSet ? cancelStartCountdown : startSet}>
+            onPress={running ? stopSet : startCountdown !== null ? cancelStartCountdown : startSet}>
             <Text style={styles.stickyPrimaryButtonText}>
-              {running ? 'Log Set' : isPreparingSet ? `Cancel ${startCountdown}` : 'Start Set'}
+              {running ? 'Log Set' : startCountdown !== null ? `Cancel ${startCountdown}` : 'Start Set'}
             </Text>
           </Pressable>
 
@@ -1621,6 +1914,17 @@ export default function HomeScreen() {
         </View>
 
       </View>
+      )}
+
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.repFlashOverlay,
+          {
+            opacity: repFlashOpacity,
+          },
+        ]}
+      />
     </View>
   );
 }
@@ -1685,6 +1989,27 @@ function normalizeLearnedProfile(profile: LearnedProfile | null) {
   return {
     ...profile,
     learnedAt: profile.learnedAt ?? new Date().toISOString(),
+  };
+}
+
+function normalizeExerciseProfiles(
+  raw: LearnedProfile | ExerciseProfiles | null
+): ExerciseProfiles {
+  if (!raw) {
+    return { rep: null, stop: null };
+  }
+
+  if ('rep' in raw || 'stop' in raw) {
+    const profiles = raw as ExerciseProfiles;
+    return {
+      rep: normalizeLearnedProfile(profiles.rep),
+      stop: normalizeLearnedProfile(profiles.stop),
+    };
+  }
+
+  return {
+    rep: normalizeLearnedProfile(raw as LearnedProfile),
+    stop: null,
   };
 }
 
@@ -1802,22 +2127,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
-  helpCard: {
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    marginBottom: 8,
-  },
-  helpCardTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    marginBottom: 4,
-  },
-  helpCardText: {
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '600',
-  },
   finishSummaryCard: {
     borderRadius: 16,
     borderWidth: 1,
@@ -1920,6 +2229,11 @@ const styles = StyleSheet.create({
     color: '#586a1d',
     fontSize: 13,
     fontWeight: '700',
+  },
+  lastWorkoutSummaryText: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 4,
   },
   previousChipRow: {
     flexDirection: 'row',
@@ -2048,7 +2362,6 @@ const styles = StyleSheet.create({
   liveSetRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
     marginTop: 12,
     marginBottom: 12,
     gap: 8,
@@ -2139,24 +2452,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 2,
   },
-  primaryButton: {
-    backgroundColor: '#41c063',
-    borderRadius: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-  },
-  primaryButtonIdle: {
-    backgroundColor: '#36b95d',
-  },
-  primaryButtonActive: {
-    backgroundColor: '#d94b4b',
-  },
-  primaryButtonText: {
-    color: '#effff2',
-    fontSize: 18,
-    fontWeight: '700',
-  },
   finishExerciseButton: {
     marginTop: 10,
     backgroundColor: '#f2c94c',
@@ -2211,6 +2506,84 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
   },
+  liveOverlay: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    padding: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 30,
+  },
+  liveOverlayFrame: {
+    width: '100%',
+    maxWidth: 420,
+    minHeight: '78%',
+    borderRadius: 28,
+    borderWidth: 2,
+    paddingVertical: 34,
+    paddingHorizontal: 24,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  liveOverlaySetLabel: {
+    fontSize: 32,
+    fontWeight: '800',
+  },
+  liveOverlayRepCircle: {
+    width: 340,
+    height: 340,
+    borderRadius: 170,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  liveOverlayRepValue: {
+    fontSize: 138,
+    fontWeight: '800',
+    lineHeight: 144,
+  },
+  liveOverlayRepLabel: {
+    fontSize: 34,
+    fontWeight: '800',
+    marginTop: 10,
+  },
+  liveOverlayState: {
+    fontSize: 18,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  liveOverlayAdjustRow: {
+    width: '100%',
+    flexDirection: 'row',
+    gap: 12,
+  },
+  liveOverlayButton: {
+    minWidth: 200,
+    backgroundColor: '#d94b4b',
+    borderRadius: 18,
+    paddingHorizontal: 24,
+    paddingVertical: 18,
+    alignItems: 'center',
+  },
+  liveOverlayButtonDisabled: {
+    opacity: 0.7,
+  },
+  liveOverlayButtonText: {
+    color: '#ffffff',
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  repFlashOverlay: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: '#39be60',
+    zIndex: 50,
+  },
   stickyDock: {
     position: 'absolute',
     left: 12,
@@ -2242,26 +2615,6 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
     marginTop: 4,
-  },
-  stickyRepBadge: {
-    minWidth: 84,
-    backgroundColor: '#214555',
-    borderRadius: 16,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    alignItems: 'center',
-  },
-  stickyRepValue: {
-    color: '#ffffff',
-    fontSize: 42,
-    fontWeight: '900',
-    lineHeight: 46,
-  },
-  stickyRepLabel: {
-    color: '#b8d1db',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1,
   },
   stickyDockActions: {
     flexDirection: 'row',
